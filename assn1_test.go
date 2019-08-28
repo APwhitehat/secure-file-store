@@ -37,7 +37,7 @@ func TestUserStorage(t *testing.T) {
 func TestFileStoreLoadAppend(t *testing.T) {
 	u1, _ := GetUser("", "fubar")
 	data1 := userlib.RandomBytes(4096)
-	u1.StoreFile("file1", data1)
+	_ = u1.StoreFile("file1", data1)
 
 	data2, _ := u1.LoadFile("file1", 0)
 

@@ -53,7 +53,7 @@ func someUsefulThings() {
 	d, _ := json.Marshal(f)
 	userlib.DebugMsg("The json data: %v", string(d))
 	var g uuid.UUID
-	json.Unmarshal(d, &g)
+	_ = json.Unmarshal(d, &g)
 	userlib.DebugMsg("Unmashaled data %v", g.String())
 
 	// This creates an error type
