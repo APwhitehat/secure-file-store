@@ -15,45 +15,40 @@ func TestInitUser(t *testing.T) {
 	_, err1 := InitUser("", "")
 	if err1 != nil {
 		t.Log("Failed to initialize user")
-		
-	}else{
+
+	} else {
 		t.Error("Initialized invalid user", err1)
 	}
 
-	// add more test cases here 
+	// add more test cases here
 }
-	
 
-
-func TestUserStorage(t *testing.T) { 
+func TestUserStorage(t *testing.T) {
 	u1, err1 := GetUser("", "fubar")
 	if err1 != nil {
-		t.Log("Cannot load data for invalid user",u1)
-	}else{
+		t.Log("Cannot load data for invalid user", u1)
+	} else {
 		t.Error("Data loaded for invalid user", err1)
 	}
 
 	// add more test cases here
 }
 
-
-
 func TestFileStoreLoadAppend(t *testing.T) {
+	u1, _ := GetUser("", "fubar")
 	data1 := userlib.RandomBytes(4096)
-	_ := u1.StoreFile("file1", data1)
+	u1.StoreFile("file1", data1)
 
-	data2, _ := u1.LoadFile("file1",0) 
-	
+	data2, _ := u1.LoadFile("file1", 0)
 
 	if !reflect.DeepEqual(data1, data2) {
 		t.Error("data corrupted")
-	}else{
+	} else {
 		t.Log("data is not corrupted")
 	}
 
 	// add test cases here
 }
-
 
 func TestFileShareReceive(t *testing.T) {
 	// add test cases here

@@ -66,9 +66,9 @@ func someUsefulThings() {
 	userlib.DebugMsg("Key is %v", key)
 }
 
-var configBlockSize = 4096  //Do not modify this variable 
+var configBlockSize = 4096 //Do not modify this variable
 
-//setBlockSize - sets the global variable denoting blocksize to the passed parameter. This will be called only once in the beginning of the execution 
+//setBlockSize - sets the global variable denoting blocksize to the passed parameter. This will be called only once in the beginning of the execution
 func setBlockSize(blocksize int) {
 	configBlockSize = blocksize
 }
@@ -91,10 +91,11 @@ type User struct {
 }
 
 // StoreFile : function used to create a  file
-// It should store the file in blocks only if length 
+// It should store the file in blocks only if length
 // of data []byte is a multiple of the blocksize; if
 // this is not the case, StoreFile should return an error.
 func (userdata *User) StoreFile(filename string, data []byte) (err error) {
+	return
 }
 
 //
@@ -104,7 +105,7 @@ func (userdata *User) StoreFile(filename string, data []byte) (err error) {
 // the block size; if it is not, AppendFile must return an error.
 // AppendFile : Function to append the file
 func (userdata *User) AppendFile(filename string, data []byte) (err error) {
-
+	return
 }
 
 // LoadFile :This loads a block from a file in the Datastore.
@@ -112,14 +113,16 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 // It should give an error if the file block is corrupted in any way.
 // If there is no error, it must return exactly one block (of length blocksize)
 // of data.
-// 
+//
 // LoadFile is also expected to be efficient. Reading a random block from the
 // file should not fetch more than O(1) blocks from the Datastore.
 func (userdata *User) LoadFile(filename string, offset int) (data []byte, err error) {
+	return
 }
 
 // ShareFile : Function used to the share file with other user
 func (userdata *User) ShareFile(filename string, recipient string) (msgid string, err error) {
+	return
 }
 
 // ReceiveFile:Note recipient's filename can be different from the sender's filename.
@@ -127,11 +130,13 @@ func (userdata *User) ShareFile(filename string, recipient string) (msgid string
 // what the filename even is!  However, the recipient must ensure that
 // it is authentically from the sender.
 // ReceiveFile : function used to receive the file details from the sender
-func (userdata *User) ReceiveFile(filename string, sender string, msgid string) error {
+func (userdata *User) ReceiveFile(filename string, sender string, msgid string) (err error) {
+	return
 }
 
 // RevokeFile : function used revoke the shared file access
 func (userdata *User) RevokeFile(filename string) (err error) {
+	return
 }
 
 // This creates a sharing record, which is a key pointing to something
@@ -166,6 +171,7 @@ type sharingRecord struct {
 
 //InitUser : function used to create user
 func InitUser(username string, password string) (userdataptr *User, err error) {
+	return
 }
 
 // GetUser : This fetches the user information from the Datastore.  It should
@@ -173,4 +179,5 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 // data was corrupted, or if the user can't be found.
 //GetUser : function used to get the user details
 func GetUser(username string, password string) (userdataptr *User, err error) {
+	return
 }
