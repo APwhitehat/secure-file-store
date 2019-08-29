@@ -91,6 +91,27 @@ func bytesToUUID(data []byte) (ret uuid.UUID) {
 	return
 }
 
+// Inode for file storage
+type Inode struct {
+	FileSize       int
+	DirectPointers []uuid.UUID
+	SingleIndirect uuid.UUID
+	DoubleIndirect uuid.UUID
+}
+
+func NewInode() *Inode {
+	return &Inode{
+		FileSize:       0,
+		DirectPointers: make([]uuid.UUID, 12),
+	}
+}
+
+// FileEntry for a filename
+type FileEntry struct {
+	InodeAddress  uuid.UUID
+	FileSecretKey []byte
+}
+
 // User : User structure used to store the user information
 type User struct {
 	Username   string
@@ -100,12 +121,6 @@ type User struct {
 	// You can add other fields here if you want...
 	// Note for JSON to marshal/unmarshal, the fields need to
 	// be public (start with a capital letter)
-}
-
-// FileEntry for a filename
-type FileEntry struct {
-	InodeAddress  uuid.UUID
-	FileSecretKey string
 }
 
 // NewUser returns a initialised User struct
@@ -122,8 +137,153 @@ func NewUser(username string, secretKey []byte, privateKey *userlib.PrivateKey) 
 // It should store the file in blocks only if length
 // of data []byte is a multiple of the blocksize; if
 // this is not the case, StoreFile should return an error.
-func (userdata *User) StoreFile(filename string, data []byte) (err error) {
+func (userdata *User) StoreFile(filename string, data []byte) error {
+	if len(data)%configBlockSize != 0 {
+		return errors.New("data not a multiple of blocksize")
+	}
+
+	if _, ok := userdata.OwnedFiles[filename]; !ok {
+		if err := userdata.createNewFile(filename); err != nil {
+			return err
+		}
+	}
+
+	fe := userdata.OwnedFiles[filename]
+	inode := NewInode()
+	buffer := data
+	for len(buffer) > 0 {
+		if err := appendBlock(inode, fe.FileSecretKey, buffer[:configBlockSize]); err != nil {
+			return err
+		}
+		buffer = buffer[configBlockSize:]
+	}
+
+	inodeJSON, err := json.Marshal(inode)
+	if err != nil {
+		return err
+	}
+
+	return SecureDatastoreSet(fe.FileSecretKey, fe.InodeAddress, inodeJSON)
+}
+
+// appendBlock add a block of data to the inode and saves it on the datastore
+func appendBlock(inode *Inode, fileSecretKey, data []byte) error {
+	key, err := uuid.FromBytes(userlib.RandomBytes(len(uuid.Nil)))
+	if err != nil {
+		return err
+	}
+
+	switch {
+	case inode.FileSize < 12:
+		inode.DirectPointers[inode.FileSize] = key
+	case inode.FileSize == 12:
+		// need to initiallize a single indirect block
+		if inode.SingleIndirect, err = initUUIDBlock(fileSecretKey); err != nil {
+			return err
+		}
+		fallthrough
+	case inode.FileSize-12 < uuidsPerBlock():
+		directPointers, err := getUUIDBlock(fileSecretKey, inode.SingleIndirect)
+		if err != nil {
+			return err
+		}
+
+		directPointers[inode.FileSize-12] = key
+		if err := setUUIDBlock(fileSecretKey, inode.SingleIndirect, directPointers); err != nil {
+			return err
+		}
+	case inode.FileSize-12 == uuidsPerBlock():
+		// need to initialize double inderect block
+		if inode.DoubleIndirect, err = initUUIDBlock(fileSecretKey); err != nil {
+			return err
+		}
+		fallthrough
+	default:
+		// assume that data would fit in the double indirect block
+		singleIndirectPointers, err := getUUIDBlock(fileSecretKey, inode.DoubleIndirect)
+		if err != nil {
+			return err
+		}
+
+		offset := (inode.FileSize - 12 - uuidsPerBlock()) / uuidsPerBlock()
+		id := (inode.FileSize - 12 - uuidsPerBlock()) % uuidsPerBlock()
+		if id == 0 {
+			// need to initialize single indirect block
+			if singleIndirectPointers[offset], err = initUUIDBlock(fileSecretKey); err != nil {
+				return err
+			}
+		}
+
+		directPointers, err := getUUIDBlock(fileSecretKey, singleIndirectPointers[offset])
+		if err != nil {
+			return err
+		}
+
+		directPointers[id] = key
+		if err := setUUIDBlock(fileSecretKey, singleIndirectPointers[offset], directPointers); err != nil {
+			return err
+		}
+	}
+	inode.FileSize++
+
+	return SecureDatastoreSet(fileSecretKey, key, data)
+}
+
+func uuidsPerBlock() int {
+	return configBlockSize / len(uuid.Nil)
+}
+
+func initUUIDBlock(fileSecretKey []byte) (key uuid.UUID, err error) {
+	uuids := make([]uuid.UUID, uuidsPerBlock())
+	key, err = uuid.FromBytes(userlib.RandomBytes(len(uuid.Nil)))
+	if err != nil {
+		return
+	}
+
+	err = setUUIDBlock(fileSecretKey, key, uuids)
 	return
+}
+
+func getUUIDBlock(fileSecretKey []byte, key uuid.UUID) ([]uuid.UUID, error) {
+	var pointers []uuid.UUID
+	data, err := SecureDatastoreGet(fileSecretKey, key)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := json.Unmarshal(data, pointers); err != nil {
+		return nil, err
+	}
+
+	return pointers, nil
+}
+
+func setUUIDBlock(fileSecretKey []byte, key uuid.UUID, uuids []uuid.UUID) error {
+	data, err := json.Marshal(uuids)
+	if err != nil {
+		return err
+	}
+
+	if err := SecureDatastoreSet(fileSecretKey, key, data); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (userdata *User) createNewFile(filename string) (err error) {
+	inodeAddress, err := uuid.FromBytes(userlib.RandomBytes(len(uuid.Nil)))
+	if err != nil {
+		return
+	}
+
+	fileSecretKey := userlib.RandomBytes(KeyLen)
+	userdata.OwnedFiles[filename] = FileEntry{
+		InodeAddress:  inodeAddress,
+		FileSecretKey: fileSecretKey,
+	}
+
+	return nil
 }
 
 //
@@ -199,6 +359,8 @@ type sharingRecord struct {
 
 // InitUser : function used to create user
 func InitUser(username string, password string) (userdataptr *User, err error) {
+	userlib.DebugMsg("InitUser called")
+
 	secretKey := userlib.Argon2Key([]byte(password), []byte(FixedSalt), KeyLen)
 	privKey, err := userlib.GenerateRSAKey()
 	if err != nil {
@@ -229,6 +391,8 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 // data was corrupted, or if the user can't be found.
 // GetUser : function used to get the user details
 func GetUser(username string, password string) (userdataptr *User, err error) {
+	userlib.DebugMsg("GetUser called")
+
 	secretKey := userlib.Argon2Key(
 		[]byte(password), []byte(FixedSalt), KeyLen,
 	)
@@ -247,6 +411,7 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 		return
 	}
 
+	userlib.DebugMsg("map is nil: %v", userdataptr.OwnedFiles == nil)
 	return
 }
 

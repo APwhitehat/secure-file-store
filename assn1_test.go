@@ -11,7 +11,7 @@ import "reflect"
 func TestInitUser(t *testing.T) {
 	t.Log("Initialization test")
 	userlib.DebugPrint = true
-	userlib.DebugPrint = false
+	// userlib.DebugPrint = false
 	_, err1 := InitUser("", "")
 	if err1 != nil {
 		t.Log("Failed to initialize user")
@@ -24,6 +24,7 @@ func TestInitUser(t *testing.T) {
 }
 
 func TestUserStorage(t *testing.T) {
+	userlib.DebugPrint = true
 	u1, err1 := GetUser("", "fubar")
 	if err1 != nil {
 		t.Log("Cannot load data for invalid user", u1)
@@ -35,7 +36,11 @@ func TestUserStorage(t *testing.T) {
 }
 
 func TestFileStoreLoadAppend(t *testing.T) {
-	u1, _ := GetUser("", "fubar")
+	userlib.DebugPrint = true
+	_, _ = InitUser("foo", "bar")
+	u1, err := GetUser("foo", "bar")
+	t.Log(err) // Extra logging, please remove
+
 	data1 := userlib.RandomBytes(4096)
 	_ = u1.StoreFile("file1", data1)
 
@@ -51,5 +56,6 @@ func TestFileStoreLoadAppend(t *testing.T) {
 }
 
 func TestFileShareReceive(t *testing.T) {
+	userlib.DebugPrint = true
 	// add test cases here
 }
