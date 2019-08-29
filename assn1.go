@@ -94,7 +94,7 @@ func bytesToUUID(data []byte) (ret uuid.UUID) {
 // User : User structure used to store the user information
 type User struct {
 	Username   string
-	SecretKey  string
+	SecretKey  []byte
 	PrivateKey *userlib.PrivateKey
 	OwnedFiles map[string]FileEntry
 	// You can add other fields here if you want...
@@ -109,7 +109,7 @@ type FileEntry struct {
 }
 
 // NewUser returns a initialised User struct
-func NewUser(username, secretKey string, privateKey *userlib.PrivateKey) *User {
+func NewUser(username string, secretKey []byte, privateKey *userlib.PrivateKey) *User {
 	return &User{
 		Username:   username,
 		SecretKey:  secretKey,
@@ -197,17 +197,30 @@ type sharingRecord struct {
 
 // You can assume the user has a STRONG password
 
-//InitUser : function used to create user
+// InitUser : function used to create user
 func InitUser(username string, password string) (userdataptr *User, err error) {
-	secretKey := string(userlib.Argon2Key([]byte(password), []byte(FixedSalt), KeyLen))
+	secretKey := userlib.Argon2Key([]byte(password), []byte(FixedSalt), KeyLen)
 	privKey, err := userlib.GenerateRSAKey()
 	if err != nil {
-		userlib.DebugMsg(err.Error())
+		userlib.DebugMsg("GenerateRSAKey failed")
 		return
 	}
 
+	// Register the public key on the keystore
+	userlib.KeystoreSet(username, privKey.PublicKey)
+	// store User struct on datastore
 	userdataptr = NewUser(username, secretKey, privKey)
-	// TODO: store User in the datastore
+	userJSON, err := json.Marshal(userdataptr)
+	if err != nil {
+		return
+	}
+
+	userLoc, err := uuidFromString(username)
+	if err != nil {
+		return
+	}
+
+	err = SecureDatastoreSet(secretKey, userLoc, userJSON)
 	return
 }
 
@@ -216,13 +229,38 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 // data was corrupted, or if the user can't be found.
 // GetUser : function used to get the user details
 func GetUser(username string, password string) (userdataptr *User, err error) {
+	secretKey := userlib.Argon2Key(
+		[]byte(password), []byte(FixedSalt), KeyLen,
+	)
+
+	userLoc, err := uuidFromString(username)
+	if err != nil {
+		return
+	}
+
+	userJSON, err := SecureDatastoreGet(secretKey, userLoc)
+	if err != nil {
+		return
+	}
+
+	if err = json.Unmarshal(userJSON, userdataptr); err != nil {
+		return
+	}
+
 	return
 }
 
+func uuidFromString(s string) (uuid.UUID, error) {
+	key := userlib.Argon2Key(
+		[]byte(s), []byte(FixedSalt), uint32(len(uuid.Nil)),
+	)
+	return uuid.FromBytes(key)
+}
+
 // SecureDatastoreSet is secure version of DatastoreSet
-func SecureDatastoreSet(secretKey string, dataKey uuid.UUID, dataValue []byte) error {
+func SecureDatastoreSet(secretKey []byte, dataKey uuid.UUID, dataValue []byte) error {
 	kdfBytes := userlib.Argon2Key(
-		[]byte(secretKey+dataKey.String()),
+		append(secretKey, []byte(dataKey.String())...),
 		[]byte(FixedSalt), KeyLen,
 	)
 	maskedLocation, err := uuid.FromBytes(kdfBytes)
@@ -230,11 +268,11 @@ func SecureDatastoreSet(secretKey string, dataKey uuid.UUID, dataValue []byte) e
 		return err
 	}
 
-	hmac := userlib.NewHMAC([]byte(secretKey)).Sum(
+	hmac := userlib.NewHMAC(secretKey).Sum(
 		append([]byte(maskedLocation.String()), dataValue...),
 	)
 	data := append(hmac, dataValue...)
-	encrypter := userlib.CFBEncrypter([]byte(secretKey), []byte(FixedIV))
+	encrypter := userlib.CFBEncrypter(secretKey, []byte(FixedIV))
 	encrypter.XORKeyStream(data, data) // this encrypts data in-place
 	userlib.DatastoreSet(
 		maskedLocation.String(),
@@ -245,9 +283,9 @@ func SecureDatastoreSet(secretKey string, dataKey uuid.UUID, dataValue []byte) e
 }
 
 // SecureDatastoreGet is secure version of DatastoreGet
-func SecureDatastoreGet(secretKey string, dataKey uuid.UUID) (dataValue []byte, err error) {
+func SecureDatastoreGet(secretKey []byte, dataKey uuid.UUID) (dataValue []byte, err error) {
 	kdfBytes := userlib.Argon2Key(
-		[]byte(secretKey+dataKey.String()),
+		append(secretKey, []byte(dataKey.String())...),
 		[]byte(FixedSalt), KeyLen,
 	)
 	maskedLocation, err := uuid.FromBytes(kdfBytes)
@@ -260,12 +298,12 @@ func SecureDatastoreGet(secretKey string, dataKey uuid.UUID) (dataValue []byte, 
 		return nil, errors.New("key not found in datastore")
 	}
 
-	decrypter := userlib.CFBDecrypter([]byte(secretKey), []byte(FixedIV))
-	decrypter.XORKeyStream(data, data) // this encrypts data in-place
+	decrypter := userlib.CFBDecrypter(secretKey, []byte(FixedIV))
+	decrypter.XORKeyStream(data, data) // this decrypts data in-place
 	oldHmac := data[:userlib.HashSize]
 	dataValue = data[userlib.HashSize:]
 
-	hmac := userlib.NewHMAC([]byte(secretKey)).Sum(
+	hmac := userlib.NewHMAC(secretKey).Sum(
 		append([]byte(maskedLocation.String()), dataValue...),
 	)
 
@@ -277,9 +315,9 @@ func SecureDatastoreGet(secretKey string, dataKey uuid.UUID) (dataValue []byte, 
 }
 
 // SecureDatastoreDelete is secure version of DatastoreDelete
-func SecureDatastoreDelete(secretKey string, dataKey uuid.UUID) error {
+func SecureDatastoreDelete(secretKey []byte, dataKey uuid.UUID) error {
 	kdfBytes := userlib.Argon2Key(
-		[]byte(secretKey+dataKey.String()),
+		append(secretKey, []byte(dataKey.String())...),
 		[]byte(FixedSalt), KeyLen,
 	)
 	maskedLocation, err := uuid.FromBytes(kdfBytes)
@@ -288,6 +326,5 @@ func SecureDatastoreDelete(secretKey string, dataKey uuid.UUID) error {
 	}
 
 	userlib.DatastoreDelete(maskedLocation.String())
-
 	return nil
 }
