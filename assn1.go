@@ -183,13 +183,14 @@ func appendBlock(inode *Inode, fileSecretKey, data []byte) error {
 		}
 		fallthrough
 	case inode.FileSize-12 < uuidsPerBlock():
-		directPointers, err := getUUIDBlock(fileSecretKey, inode.SingleIndirect)
+		var directPointers []uuid.UUID
+		directPointers, err = getUUIDBlock(fileSecretKey, inode.SingleIndirect)
 		if err != nil {
 			return err
 		}
 
 		directPointers[inode.FileSize-12] = key
-		if err := setUUIDBlock(fileSecretKey, inode.SingleIndirect, directPointers); err != nil {
+		if err = setUUIDBlock(fileSecretKey, inode.SingleIndirect, directPointers); err != nil {
 			return err
 		}
 	case inode.FileSize-12 == uuidsPerBlock():
@@ -251,7 +252,7 @@ func getUUIDBlock(fileSecretKey []byte, key uuid.UUID) ([]uuid.UUID, error) {
 		return nil, err
 	}
 
-	if err := json.Unmarshal(data, pointers); err != nil {
+	if err := json.Unmarshal(data, &pointers); err != nil {
 		return nil, err
 	}
 
@@ -390,7 +391,7 @@ func InitUser(username string, password string) (userdataptr *User, err error) {
 // fail with an error if the user/password is invalid, or if the user
 // data was corrupted, or if the user can't be found.
 // GetUser : function used to get the user details
-func GetUser(username string, password string) (userdataptr *User, err error) {
+func GetUser(username string, password string) (*User, error) {
 	userlib.DebugMsg("GetUser called")
 
 	secretKey := userlib.Argon2Key(
@@ -399,20 +400,21 @@ func GetUser(username string, password string) (userdataptr *User, err error) {
 
 	userLoc, err := uuidFromString(username)
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	userJSON, err := SecureDatastoreGet(secretKey, userLoc)
 	if err != nil {
-		return
+		return nil, err
 	}
 
+	var userdataptr *User
 	if err = json.Unmarshal(userJSON, userdataptr); err != nil {
-		return
+		return nil, err
 	}
 
-	userlib.DebugMsg("map is nil: %v", userdataptr.OwnedFiles == nil)
-	return
+	// userlib.DebugMsg("map is nil: %v", userdataptr.OwnedFiles)
+	return userdataptr, nil
 }
 
 func uuidFromString(s string) (uuid.UUID, error) {
