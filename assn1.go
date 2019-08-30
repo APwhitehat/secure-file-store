@@ -141,35 +141,10 @@ func NewUser(username string, secretKey []byte, privateKey *userlib.PrivateKey) 
 // of data []byte is a multiple of the blocksize; if
 // this is not the case, StoreFile should return an error.
 func (userdata *User) StoreFile(filename string, data []byte) error {
-	if len(data)%configBlockSize != 0 {
-		return errors.New("data not a multiple of blocksize")
-	}
-
-	if _, ok := userdata.OwnedFiles[filename]; !ok {
-		if err := userdata.createNewFile(filename); err != nil {
-			return err
-		}
-	}
-
-	fe := userdata.OwnedFiles[filename]
-	inode := NewInode()
-	buffer := data
-	for len(buffer) > 0 {
-		if err := appendBlock(inode, fe.FileSecretKey, buffer[:configBlockSize]); err != nil {
-			return err
-		}
-		buffer = buffer[configBlockSize:]
-	}
-
-	inodeJSON, err := json.Marshal(inode)
-	if err != nil {
-		return err
-	}
-
-	return SecureDatastoreSet(fe.FileSecretKey, fe.InodeAddress, inodeJSON)
+	return userdata.AppendFile(filename, data)
 }
 
-// appendBlock add a block of data to the inode and saves it on the datastore
+// appendBlock adds a block of data to the inode and saves it on the datastore
 func appendBlock(inode *Inode, fileSecretKey, data []byte) error {
 	key, err := uuid.FromBytes(userlib.RandomBytes(len(uuid.Nil)))
 	if err != nil {
@@ -296,8 +271,46 @@ func (userdata *User) createNewFile(filename string) (err error) {
 // metadata you need. The length of data []byte must be a multiple of
 // the block size; if it is not, AppendFile must return an error.
 // AppendFile : Function to append the file
-func (userdata *User) AppendFile(filename string, data []byte) (err error) {
-	return
+func (userdata *User) AppendFile(filename string, data []byte) error {
+	if len(data)%configBlockSize != 0 {
+		return errors.New("data not a multiple of blocksize")
+	}
+
+	var inode Inode
+	if fe, ok := userdata.OwnedFiles[filename]; !ok {
+		if err := userdata.createNewFile(filename); err != nil {
+			return err
+		}
+
+		inode = *NewInode()
+	} else {
+		// file exists, load the inode from datastore
+		inodeJSON, err := SecureDatastoreGet(fe.FileSecretKey, fe.InodeAddress)
+		if err != nil {
+			return err
+		}
+
+		err = json.Unmarshal(inodeJSON, &inode)
+		if err != nil {
+			return err
+		}
+	}
+
+	fe := userdata.OwnedFiles[filename]
+	buffer := data
+	for len(buffer) > 0 {
+		if err := appendBlock(&inode, fe.FileSecretKey, buffer[:configBlockSize]); err != nil {
+			return err
+		}
+		buffer = buffer[configBlockSize:]
+	}
+
+	inodeJSON, err := json.Marshal(inode)
+	if err != nil {
+		return err
+	}
+
+	return SecureDatastoreSet(fe.FileSecretKey, fe.InodeAddress, inodeJSON)
 }
 
 // LoadFile :This loads a block from a file in the Datastore.
@@ -309,12 +322,80 @@ func (userdata *User) AppendFile(filename string, data []byte) (err error) {
 // LoadFile is also expected to be efficient. Reading a random block from the
 // file should not fetch more than O(1) blocks from the Datastore.
 func (userdata *User) LoadFile(filename string, offset int) (data []byte, err error) {
-	return
+	fe := userdata.OwnedFiles[filename]
+	var inode Inode
+	inodeJSON, err := SecureDatastoreGet(fe.FileSecretKey, fe.InodeAddress)
+	if err != nil {
+		return nil, err
+	}
+
+	err = json.Unmarshal(inodeJSON, &inode)
+	if err != nil {
+		return nil, err
+	}
+
+	if offset >= inode.FileSize {
+		userlib.DebugMsg("invalid block offset")
+		return nil, errors.New("offset invalid or does not exist")
+	}
+
+	var key uuid.UUID
+	switch {
+	case offset < 12:
+		key = inode.DirectPointers[offset]
+	case offset < uuidsPerBlock():
+		directPointers, err := getUUIDBlock(fe.FileSecretKey, inode.SingleIndirect)
+		if err != nil {
+			return nil, err
+		}
+		key = directPointers[offset-12]
+	default:
+		// assume that the filesize would be less than the double indirect pointer storage capacity
+		indirectPointers, err := getUUIDBlock(fe.FileSecretKey, inode.DoubleIndirect)
+		if err != nil {
+			return nil, err
+		}
+
+		indirectBlockID := (offset - 12 - uuidsPerBlock()) / uuidsPerBlock()
+		id := (inode.FileSize - 12 - uuidsPerBlock()) % uuidsPerBlock()
+
+		directPointers, err := getUUIDBlock(fe.FileSecretKey, indirectPointers[indirectBlockID])
+		if err != nil {
+			return nil, err
+		}
+
+		key = directPointers[id]
+	}
+
+	return SecureDatastoreGet(fe.FileSecretKey, key)
 }
 
 // ShareFile : Function used to the share file with other user
 func (userdata *User) ShareFile(filename string, recipient string) (msgid string, err error) {
-	return
+	fe := userdata.OwnedFiles[filename]
+	feJSON, err := json.Marshal(fe)
+	if err != nil {
+		return "", err
+	}
+
+	sign, err := userlib.RSASign(userdata.PrivateKey, feJSON)
+	if err != nil {
+		return "", err
+	}
+
+	// prepare data to send
+	data := append(sign, feJSON...)
+	pubKey, ok := userlib.KeystoreGet(recipient)
+	if !ok {
+		return "", errors.New("recipient not found")
+	}
+
+	encryptedData, err := userlib.RSAEncrypt(&pubKey, data, nil)
+	if err != nil {
+		return "", err
+	}
+
+	return string(encryptedData), nil
 }
 
 // ReceiveFile:Note recipient's filename can be different from the sender's filename.
@@ -322,8 +403,31 @@ func (userdata *User) ShareFile(filename string, recipient string) (msgid string
 // what the filename even is!  However, the recipient must ensure that
 // it is authentically from the sender.
 // ReceiveFile : function used to receive the file details from the sender
-func (userdata *User) ReceiveFile(filename string, sender string, msgid string) (err error) {
-	return
+func (userdata *User) ReceiveFile(filename string, sender string, msgid string) error {
+	data, err := userlib.RSADecrypt(userdata.PrivateKey, []byte(msgid), nil)
+	if err != nil {
+		return err
+	}
+
+	sign := data[:userlib.HashSize]
+	data = data[userlib.HashSize:]
+	pubKey, ok := userlib.KeystoreGet(sender)
+	if !ok {
+		return errors.New("Sender not found")
+	}
+
+	if err := userlib.RSAVerify(&pubKey, data, sign); err != nil {
+		userlib.DebugMsg("RSA signature verification failed")
+		return err
+	}
+
+	var fe FileEntry
+	if err := json.Unmarshal(data, &fe); err != nil {
+		return err
+	}
+
+	userdata.OwnedFiles[filename] = fe
+	return nil
 }
 
 // RevokeFile : function used revoke the shared file access
