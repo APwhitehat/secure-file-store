@@ -10,36 +10,47 @@ import "reflect"
 
 func TestInitUser(t *testing.T) {
 	t.Log("Initialization test")
-	userlib.DebugPrint = true
-	// userlib.DebugPrint = false
+	// userlib.DebugPrint = true
 	_, err1 := InitUser("", "")
 	if err1 != nil {
-		t.Log("Failed to initialize user")
-
+		t.Log("Failed to initialize invalid user")
 	} else {
-		t.Error("Initialized invalid user", err1)
+		t.Error("Initialized invalid user")
 	}
 
+	_, err1 = InitUser("foo", "bar")
+	if err1 != nil {
+		t.Error("Failed to initialize user", err1)
+	} else {
+		t.Log("Successfully initialized user")
+	}
 	// add more test cases here
 }
 
 func TestUserStorage(t *testing.T) {
-	userlib.DebugPrint = true
-	u1, err1 := GetUser("", "fubar")
-	if err1 != nil {
-		t.Log("Cannot load data for invalid user", u1)
+	// userlib.DebugPrint = true
+	u, err := GetUser("", "fubar")
+	if err != nil {
+		t.Log("Cannot load data for invalid user", u)
 	} else {
-		t.Error("Data loaded for invalid user", err1)
+		t.Error("Data loaded for invalid user", err)
 	}
 
+	_, _ = InitUser("foo", "bar")
+	u, err = GetUser("foo", "bar")
+	if err != nil {
+		t.Error("Cannot load data for valid user", err)
+	} else {
+		t.Log("Loaded data for valid user", u)
+	}
 	// add more test cases here
 }
 
 func TestFileStoreLoadAppend(t *testing.T) {
-	userlib.DebugPrint = true
 	_, _ = InitUser("foo", "bar")
-	u1, err := GetUser("foo", "bar")
-	t.Log(err) // Extra logging, please remove
+	u1, _ := GetUser("foo", "bar")
+
+	userlib.DebugPrint = true
 
 	data1 := userlib.RandomBytes(4096)
 	_ = u1.StoreFile("file1", data1)

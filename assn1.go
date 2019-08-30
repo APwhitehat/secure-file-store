@@ -35,10 +35,13 @@ import (
 const (
 	// FixedSalt is used for KDF functions
 	FixedSalt = "ThisIsVeryRandom"
-	// KeyLen for KDF generated keys
-	KeyLen = 256
 	// FixedIV is used for CFBEncrypter/Decrypter, should be of length aes.BlockSize
 	FixedIV = "ThisIsVeryRandom"
+)
+
+var (
+	// KeyLen for KDF generated keys
+	KeyLen = uint32(userlib.AESKeySize)
 )
 
 // This serves two purposes: It shows you some useful primitives and
@@ -278,7 +281,7 @@ func (userdata *User) createNewFile(filename string) (err error) {
 		return
 	}
 
-	fileSecretKey := userlib.RandomBytes(KeyLen)
+	fileSecretKey := userlib.RandomBytes(int(KeyLen))
 	userdata.OwnedFiles[filename] = FileEntry{
 		InodeAddress:  inodeAddress,
 		FileSecretKey: fileSecretKey,
@@ -359,32 +362,36 @@ type sharingRecord struct {
 // You can assume the user has a STRONG password
 
 // InitUser : function used to create user
-func InitUser(username string, password string) (userdataptr *User, err error) {
+func InitUser(username string, password string) (*User, error) {
 	userlib.DebugMsg("InitUser called")
+	if username == "" {
+		return nil, errors.New("Invalid username")
+	}
 
 	secretKey := userlib.Argon2Key([]byte(password), []byte(FixedSalt), KeyLen)
 	privKey, err := userlib.GenerateRSAKey()
 	if err != nil {
 		userlib.DebugMsg("GenerateRSAKey failed")
-		return
+		return nil, err
 	}
 
 	// Register the public key on the keystore
 	userlib.KeystoreSet(username, privKey.PublicKey)
 	// store User struct on datastore
-	userdataptr = NewUser(username, secretKey, privKey)
+	userdataptr := NewUser(username, secretKey, privKey)
+	userlib.DebugMsg("user=%+v", userdataptr)
 	userJSON, err := json.Marshal(userdataptr)
 	if err != nil {
-		return
+		return nil, err
 	}
 
+	userlib.DebugMsg("userJSON=%s", userJSON)
 	userLoc, err := uuidFromString(username)
 	if err != nil {
-		return
+		return nil, err
 	}
 
-	err = SecureDatastoreSet(secretKey, userLoc, userJSON)
-	return
+	return userdataptr, SecureDatastoreSet(secretKey, userLoc, userJSON)
 }
 
 // GetUser : This fetches the user information from the Datastore.  It should
@@ -400,21 +407,26 @@ func GetUser(username string, password string) (*User, error) {
 
 	userLoc, err := uuidFromString(username)
 	if err != nil {
+		userlib.DebugMsg("failed to determine uuid for username")
 		return nil, err
 	}
 
 	userJSON, err := SecureDatastoreGet(secretKey, userLoc)
 	if err != nil {
+		userlib.DebugMsg("failed to DatastoreGet for username=%s", username)
 		return nil, err
 	}
 
-	var userdataptr *User
-	if err = json.Unmarshal(userJSON, userdataptr); err != nil {
+	userlib.DebugMsg("userJSON=%s", userJSON)
+	var userdata User
+	if err = json.Unmarshal(userJSON, &userdata); err != nil {
+		userlib.DebugMsg("Unmarshal failed")
 		return nil, err
 	}
 
+	userlib.DebugMsg("user=%+v", userdata)
 	// userlib.DebugMsg("map is nil: %v", userdataptr.OwnedFiles)
-	return userdataptr, nil
+	return &userdata, nil
 }
 
 func uuidFromString(s string) (uuid.UUID, error) {
@@ -426,19 +438,17 @@ func uuidFromString(s string) (uuid.UUID, error) {
 
 // SecureDatastoreSet is secure version of DatastoreSet
 func SecureDatastoreSet(secretKey []byte, dataKey uuid.UUID, dataValue []byte) error {
-	kdfBytes := userlib.Argon2Key(
-		append(secretKey, []byte(dataKey.String())...),
-		[]byte(FixedSalt), KeyLen,
-	)
-	maskedLocation, err := uuid.FromBytes(kdfBytes)
+	maskedLocation, err := uuidFromString(string(secretKey) + dataKey.String())
 	if err != nil {
 		return err
 	}
 
-	hmac := userlib.NewHMAC(secretKey).Sum(
-		append([]byte(maskedLocation.String()), dataValue...),
-	)
-	data := append(hmac, dataValue...)
+	hmacWriter := userlib.NewHMAC(secretKey)
+	_, _ = hmacWriter.Write([]byte(maskedLocation.String()))
+	_, _ = hmacWriter.Write(dataValue)
+	data := append(hmacWriter.Sum(nil), dataValue...)
+	userlib.DebugMsg("hmac=%v", hmacWriter.Sum(nil))
+
 	encrypter := userlib.CFBEncrypter(secretKey, []byte(FixedIV))
 	encrypter.XORKeyStream(data, data) // this encrypts data in-place
 	userlib.DatastoreSet(
@@ -451,11 +461,7 @@ func SecureDatastoreSet(secretKey []byte, dataKey uuid.UUID, dataValue []byte) e
 
 // SecureDatastoreGet is secure version of DatastoreGet
 func SecureDatastoreGet(secretKey []byte, dataKey uuid.UUID) (dataValue []byte, err error) {
-	kdfBytes := userlib.Argon2Key(
-		append(secretKey, []byte(dataKey.String())...),
-		[]byte(FixedSalt), KeyLen,
-	)
-	maskedLocation, err := uuid.FromBytes(kdfBytes)
+	maskedLocation, err := uuidFromString(string(secretKey) + dataKey.String())
 	if err != nil {
 		return
 	}
@@ -470,11 +476,12 @@ func SecureDatastoreGet(secretKey []byte, dataKey uuid.UUID) (dataValue []byte, 
 	oldHmac := data[:userlib.HashSize]
 	dataValue = data[userlib.HashSize:]
 
-	hmac := userlib.NewHMAC(secretKey).Sum(
-		append([]byte(maskedLocation.String()), dataValue...),
-	)
+	hmacWriter := userlib.NewHMAC(secretKey)
+	_, _ = hmacWriter.Write([]byte(maskedLocation.String()))
+	_, _ = hmacWriter.Write(dataValue)
+	userlib.DebugMsg("hmac=%v", hmacWriter.Sum(nil))
 
-	if !userlib.Equal(oldHmac, hmac) {
+	if !userlib.Equal(oldHmac, hmacWriter.Sum(nil)) {
 		return nil, errors.New("integrity check failed")
 	}
 
