@@ -370,6 +370,40 @@ func (userdata *User) LoadFile(filename string, offset int) (data []byte, err er
 	return SecureDatastoreGet(fe.FileSecretKey, key)
 }
 
+
+func (userdata *User) LoadFileIndirect(inode *Inode, offset int) (data []byte, err error) {
+
+	var key uuid.UUID
+	switch {
+	case offset < 12:
+		key = inode.DirectPointers[offset]
+	case offset < uuidsPerBlock():
+		directPointers, err := getUUIDBlock(fileSecKey, inode.SingleIndirect)
+		if err != nil {
+			return nil, err
+		}
+		key = directPointers[offset-12]
+	default:
+		// assume that the filesize would be less than the double indirect pointer storage capacity
+		indirectPointers, err := getUUIDBlock(fileSecKey, inode.DoubleIndirect)
+		if err != nil {
+			return nil, err
+		}
+
+		indirectBlockID := (offset - 12 - uuidsPerBlock()) / uuidsPerBlock()
+		id := (inode.FileSize - 12 - uuidsPerBlock()) % uuidsPerBlock()
+
+		directPointers, err := getUUIDBlock(fileSecKey, indirectPointers[indirectBlockID])
+		if err != nil {
+			return nil, err
+		}
+
+		key = directPointers[id]
+	}
+
+	return SecureDatastoreGet(fileSecKey, key)
+}
+
 // ShareFile : Function used to the share file with other user
 func (userdata *User) ShareFile(filename string, recipient string) (msgid string, err error) {
 	fe := userdata.OwnedFiles[filename]
@@ -432,7 +466,43 @@ func (userdata *User) ReceiveFile(filename string, sender string, msgid string) 
 
 // RevokeFile : function used revoke the shared file access
 func (userdata *User) RevokeFile(filename string) (err error) {
-	return
+	feOld := userdata.OwnedFiles[filename]
+	var inodeOld Inode
+	inodeOldJSON, err := SecureDatastoreGet(feOld.FileSecretKey, feOld.InodeAddress)
+	if err != nil {
+		return nil, err
+	}
+
+	err = json.Unmarshal(inodeOldJSON, &inodeOld)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := delete(userdata.OwnedFiles, filename); err != nil {
+		return err
+	}
+	
+    if err := userdata.createNewFile(filename); err != nil {
+		return err
+	}
+
+	feNew := userdata.OwnedFiles[filename]
+	inodeNew := *NewInode()
+
+	size := inodeOld.size
+	for offset := 0; offset < size; offset++ {
+     	buffer:=userdata.LoadFileIndirect(&inodeOld,offset)
+     	if err := appendBlock(&inodeNew,feNew.FileSecretKey,buffer); err != nil {
+			return err
+		}
+   	}
+
+   	inodeNewJSON, err := json.Marshal(inodeNew)
+	if err != nil {
+		return err
+	}
+
+	return SecureDatastoreSet(feNew.FileSecretKey, feNew.InodeAddress, inodeNewJSON)
 }
 
 // This creates a sharing record, which is a key pointing to something
