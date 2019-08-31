@@ -36,7 +36,7 @@ const (
 	// FixedSalt is used for KDF functions
 	FixedSalt = "ThisIsVeryRandom"
 	// FixedIV is used for CFBEncrypter/Decrypter, should be of length aes.BlockSize
-	FixedIV = "ThisIsVeryRandom"
+	// FixedIV = "ThisIsVeryRandom"
 )
 
 var (
@@ -378,18 +378,37 @@ func (userdata *User) ShareFile(filename string, recipient string) (msgid string
 		return "", err
 	}
 
+	// userlib.DebugMsg("json length: %v", len(feJSON))
 	sign, err := userlib.RSASign(userdata.PrivateKey, feJSON)
 	if err != nil {
 		return "", err
 	}
 
+	// userlib.DebugMsg("sign length: %v", len(sign))
+	userlib.DebugMsg("feJSON=%s, sign=%v", feJSON, sign)
 	// prepare data to send
-	data := append(sign, feJSON...)
+	sharingRecordData := append(sign, feJSON...)
+	sharingRecordKey := userlib.RandomBytes(int(KeyLen))
+	sharingRecordAddress, err := uuidFromString(
+		string(userlib.RandomBytes(len(uuid.Nil))),
+	)
+	if err != nil {
+		return "", err
+	}
+
+	err = SecureDatastoreSet(sharingRecordKey, sharingRecordAddress, sharingRecordData)
+	if err != nil {
+		return "", err
+	}
+
 	pubKey, ok := userlib.KeystoreGet(recipient)
 	if !ok {
 		return "", errors.New("recipient not found")
 	}
 
+	userlib.DebugMsg("sharingRecordKey=%v, sharingRecordAddress=%s", sharingRecordKey, sharingRecordAddress)
+	data := append(sharingRecordKey, sharingRecordAddress.String()...)
+	userlib.DebugMsg("Total data length: %v", len(data))
 	encryptedData, err := userlib.RSAEncrypt(&pubKey, data, nil)
 	if err != nil {
 		return "", err
@@ -409,20 +428,33 @@ func (userdata *User) ReceiveFile(filename string, sender string, msgid string) 
 		return err
 	}
 
-	sign := data[:userlib.HashSize]
-	data = data[userlib.HashSize:]
-	pubKey, ok := userlib.KeystoreGet(sender)
-	if !ok {
-		return errors.New("Sender not found")
+	sharingRecordKey := data[:KeyLen]
+	sharingRecordAddress, err := uuid.Parse(string(data[KeyLen:]))
+	if err != nil {
+		return err
 	}
 
-	if err := userlib.RSAVerify(&pubKey, data, sign); err != nil {
+	userlib.DebugMsg("sharingRecordKey=%v, sharingRecordAddress=%s", sharingRecordKey, sharingRecordAddress)
+	sharingRecordData, err := SecureDatastoreGet(sharingRecordKey, sharingRecordAddress)
+	if err != nil {
+		return err
+	}
+
+	sign := sharingRecordData[:256]
+	feJSON := sharingRecordData[256:]
+	pubKey, ok := userlib.KeystoreGet(sender)
+	if !ok {
+		return errors.New("sender not found")
+	}
+
+	userlib.DebugMsg("feJSON=%s, sign=%v", feJSON, sign)
+	if err := userlib.RSAVerify(&pubKey, feJSON, sign); err != nil {
 		userlib.DebugMsg("RSA signature verification failed")
 		return err
 	}
 
 	var fe FileEntry
-	if err := json.Unmarshal(data, &fe); err != nil {
+	if err := json.Unmarshal(feJSON, &fe); err != nil {
 		return err
 	}
 
@@ -472,6 +504,11 @@ func InitUser(username string, password string) (*User, error) {
 		return nil, errors.New("Invalid username")
 	}
 
+	if _, ok := userlib.KeystoreGet(username); ok {
+		// user already exists
+		return nil, errors.New("User already exists, aborted")
+	}
+
 	secretKey := userlib.Argon2Key([]byte(password), []byte(FixedSalt), KeyLen)
 	privKey, err := userlib.GenerateRSAKey()
 	if err != nil {
@@ -489,7 +526,7 @@ func InitUser(username string, password string) (*User, error) {
 		return nil, err
 	}
 
-	userlib.DebugMsg("userJSON=%s", userJSON)
+	// userlib.DebugMsg("userJSON=%s", userJSON)
 	userLoc, err := uuidFromString(username)
 	if err != nil {
 		return nil, err
@@ -521,7 +558,7 @@ func GetUser(username string, password string) (*User, error) {
 		return nil, err
 	}
 
-	userlib.DebugMsg("userJSON=%s", userJSON)
+	// userlib.DebugMsg("userJSON=%s", userJSON)
 	var userdata User
 	if err = json.Unmarshal(userJSON, &userdata); err != nil {
 		userlib.DebugMsg("Unmarshal failed")
@@ -553,7 +590,7 @@ func SecureDatastoreSet(secretKey []byte, dataKey uuid.UUID, dataValue []byte) e
 	data := append(hmacWriter.Sum(nil), dataValue...)
 	userlib.DebugMsg("hmac=%v", hmacWriter.Sum(nil))
 
-	encrypter := userlib.CFBEncrypter(secretKey, []byte(FixedIV))
+	encrypter := userlib.CFBEncrypter(secretKey, deriveIV([]byte(dataKey.String())))
 	encrypter.XORKeyStream(data, data) // this encrypts data in-place
 	userlib.DatastoreSet(
 		maskedLocation.String(),
@@ -575,7 +612,7 @@ func SecureDatastoreGet(secretKey []byte, dataKey uuid.UUID) (dataValue []byte, 
 		return nil, errors.New("key not found in datastore")
 	}
 
-	decrypter := userlib.CFBDecrypter(secretKey, []byte(FixedIV))
+	decrypter := userlib.CFBDecrypter(secretKey, deriveIV([]byte(dataKey.String())))
 	decrypter.XORKeyStream(data, data) // this decrypts data in-place
 	oldHmac := data[:userlib.HashSize]
 	dataValue = data[userlib.HashSize:]
@@ -590,6 +627,10 @@ func SecureDatastoreGet(secretKey []byte, dataKey uuid.UUID) (dataValue []byte, 
 	}
 
 	return
+}
+
+func deriveIV(seed []byte) []byte {
+	return userlib.Argon2Key(seed, []byte(FixedSalt), uint32(userlib.BlockSize))
 }
 
 // SecureDatastoreDelete is secure version of DatastoreDelete
