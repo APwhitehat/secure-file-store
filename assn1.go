@@ -146,11 +146,8 @@ func (userdata *User) StoreFile(filename string, data []byte) error {
 
 // appendBlock adds a block of data to the inode and saves it on the datastore
 // Does not store inode on the Datastore
-func appendBlock(inode *Inode, fileSecretKey, data []byte) error {
-	key, err := uuid.FromBytes(userlib.RandomBytes(len(uuid.Nil)))
-	if err != nil {
-		return err
-	}
+func appendBlock(inode *Inode, fileSecretKey, data []byte) (err error) {
+	key := uuid.New()
 
 	switch {
 	case inode.FileSize < 12:
@@ -215,10 +212,7 @@ func uuidsPerBlock() int {
 
 func initUUIDBlock(fileSecretKey []byte) (key uuid.UUID, err error) {
 	uuids := make([]uuid.UUID, uuidsPerBlock())
-	key, err = uuid.FromBytes(userlib.RandomBytes(len(uuid.Nil)))
-	if err != nil {
-		return
-	}
+	key = uuid.New()
 
 	err = setUUIDBlock(fileSecretKey, key, uuids)
 	return
@@ -252,10 +246,7 @@ func setUUIDBlock(fileSecretKey []byte, key uuid.UUID, uuids []uuid.UUID) error 
 }
 
 func (userdata *User) createNewFile(filename string) (err error) {
-	inodeAddress, err := uuid.FromBytes(userlib.RandomBytes(len(uuid.Nil)))
-	if err != nil {
-		return
-	}
+	inodeAddress := uuid.New()
 
 	fileSecretKey := userlib.RandomBytes(int(KeyLen))
 	userdata.OwnedFiles[filename] = FileEntry{
@@ -406,12 +397,7 @@ func (userdata *User) ShareFile(filename string, recipient string) (string, erro
 	// prepare data to send
 	sharingRecordData := append(sign, feJSON...)
 	sharingRecordKey := userlib.RandomBytes(int(KeyLen))
-	sharingRecordAddress, err := uuidFromString(
-		string(userlib.RandomBytes(len(uuid.Nil))),
-	)
-	if err != nil {
-		return "", err
-	}
+	sharingRecordAddress := uuid.New()
 
 	err = SecureDatastoreSet(sharingRecordKey, sharingRecordAddress, sharingRecordData)
 	if err != nil {
@@ -572,7 +558,7 @@ func InitUser(username string, password string) (*User, error) {
 		return nil, errors.New("User already exists, aborted")
 	}
 
-	secretKey := userlib.Argon2Key([]byte(password), []byte(FixedSalt), KeyLen)
+	secretKey := userlib.Argon2Key([]byte(password+username), []byte(FixedSalt), KeyLen)
 	privKey, err := userlib.GenerateRSAKey()
 	if err != nil {
 		userlib.DebugMsg("GenerateRSAKey failed")
@@ -593,7 +579,7 @@ func InitUser(username string, password string) (*User, error) {
 }
 
 func (userdata *User) loadUser() error {
-	userLoc, err := uuidFromString(userdata.Username)
+	userLoc, err := uuidFromBytes([]byte(userdata.Username))
 	if err != nil {
 		return err
 	}
@@ -613,7 +599,7 @@ func (userdata *User) saveUser() error {
 	}
 
 	// userlib.DebugMsg("userJSON=%s", userJSON)
-	userLoc, err := uuidFromString(userdata.Username)
+	userLoc, err := uuidFromBytes([]byte(userdata.Username))
 	if err != nil {
 		return err
 	}
@@ -629,10 +615,10 @@ func GetUser(username string, password string) (*User, error) {
 	userlib.DebugMsg("GetUser called")
 
 	secretKey := userlib.Argon2Key(
-		[]byte(password), []byte(FixedSalt), KeyLen,
+		[]byte(password+username), []byte(FixedSalt), KeyLen,
 	)
 
-	userLoc, err := uuidFromString(username)
+	userLoc, err := uuidFromBytes([]byte(username))
 	if err != nil {
 		userlib.DebugMsg("failed to determine uuid for username")
 		return nil, err
@@ -656,16 +642,16 @@ func GetUser(username string, password string) (*User, error) {
 	return &userdata, nil
 }
 
-func uuidFromString(s string) (uuid.UUID, error) {
+func uuidFromBytes(b []byte) (uuid.UUID, error) {
 	key := userlib.Argon2Key(
-		[]byte(s), []byte(FixedSalt), uint32(len(uuid.Nil)),
+		b, []byte(FixedSalt), uint32(len(uuid.Nil)),
 	)
 	return uuid.FromBytes(key)
 }
 
 // SecureDatastoreSet is secure version of DatastoreSet
 func SecureDatastoreSet(secretKey []byte, dataKey uuid.UUID, dataValue []byte) error {
-	maskedLocation, err := uuidFromString(string(secretKey) + dataKey.String())
+	maskedLocation, err := uuidFromBytes(append(secretKey, dataKey.String()...))
 	if err != nil {
 		return err
 	}
@@ -689,7 +675,7 @@ func SecureDatastoreSet(secretKey []byte, dataKey uuid.UUID, dataValue []byte) e
 
 // SecureDatastoreGet is secure version of DatastoreGet
 func SecureDatastoreGet(secretKey []byte, dataKey uuid.UUID) (dataValue []byte, err error) {
-	maskedLocation, err := uuidFromString(string(secretKey) + dataKey.String())
+	maskedLocation, err := uuidFromBytes(append(secretKey, dataKey.String()...))
 	if err != nil {
 		return
 	}
