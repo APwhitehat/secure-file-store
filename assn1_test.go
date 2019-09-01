@@ -71,6 +71,29 @@ func TestFileStoreLoadAppend(t *testing.T) {
 		t.Log("data is not corrupted")
 	}
 
+	// repeat
+	data1 = userlib.RandomBytes(4096)
+	_ = u1.StoreFile("file1", data1)
+
+	data2, _ = u1.LoadFile("file1", 0)
+
+	if !reflect.DeepEqual(data1, data2) {
+		t.Error("data corrupted")
+	} else {
+		t.Log("data is not corrupted")
+	}
+
+	// test append
+	data1 = userlib.RandomBytes(4096)
+	_ = u1.AppendFile("file1", data1)
+
+	data2, _ = u1.LoadFile("file1", 1)
+
+	if !reflect.DeepEqual(data1, data2) {
+		t.Error("data corrupted")
+	} else {
+		t.Log("data is not corrupted")
+	}
 	// add test cases here
 }
 
@@ -142,8 +165,9 @@ func TestFileShareReceive(t *testing.T) {
 func TestFileShareRevoke(t *testing.T) {
 	userlib.KeystoreClear()
 	userlib.DatastoreClear()
-	u1, _ := InitUser("foo", "bar")
-	u2, _ := InitUser("foo2", "bar1")
+	u1, _ := InitUser("foo", "bar1")
+	u2, _ := InitUser("foo2", "bar2")
+	u3, _ := InitUser("foo3", "bar3")
 
 	data1 := userlib.RandomBytes(4096)
 	_ = u1.StoreFile("file1", data1)
@@ -158,19 +182,80 @@ func TestFileShareRevoke(t *testing.T) {
 		t.Error("Failed to receive file", err)
 	}
 
+	m, err = u2.ShareFile("copyOfFile1", "foo3")
+	if err != nil {
+		t.Error("Failed to share copyOfFile1: ", err)
+	}
+
+	err = u3.ReceiveFile("copyOfCopyOfFile1", "foo2", m)
+	if err != nil {
+		t.Error("Failed to receive file", err)
+	}
+
 	userlib.DebugPrint = true
 
-	err = u1.RevokeFile("file1")
+	err = u2.RevokeFile("copyOfFile1")
 	if err != nil {
 		t.Error("Failed to Revoke file", err)
 	}
 
-	data2, err := u2.LoadFile("copyOfFile1", 0)
+	data2, err := u1.LoadFile("file1", 0)
 
 	if err == nil && reflect.DeepEqual(data1, data2) {
 		t.Error("Correct Data Received")
 	} else {
 		t.Log("data not fetched: ", err)
+	}
+
+	data2, err = u3.LoadFile("copyOfCopyOfFile1", 0)
+
+	if err == nil && reflect.DeepEqual(data1, data2) {
+		t.Error("Correct Data Received")
+	} else {
+		t.Log("data not fetched: ", err)
+	}
+
+	data2, err = u2.LoadFile("copyOfFile1", 0)
+
+	if err != nil || !reflect.DeepEqual(data1, data2) {
+		t.Error("Corrupt Data Received: ", err)
+	} else {
+		t.Log("data fetched")
+	}
+	// add test cases here
+}
+
+func TestFileShareRevokeMutate(t *testing.T) {
+	userlib.KeystoreClear()
+	userlib.DatastoreClear()
+	u1, _ := InitUser("foo", "bar1")
+	u2, _ := InitUser("foo2", "bar2")
+	u3, _ := InitUser("foo3", "bar3")
+
+	data1 := userlib.RandomBytes(4096)
+	_ = u1.StoreFile("file1", data1)
+
+	data2 := userlib.RandomBytes(4096)
+	_ = u2.StoreFile("file2", data2)
+
+	// m1, err := u1.ShareFile("file1", "foo3")
+	// if err != nil {
+	// 	t.Error("Failed to share file1: ", err)
+	// }
+
+	m2, err := u2.ShareFile("file2", "foo3")
+	if err != nil {
+		t.Error("Failed to share file2: ", err)
+	}
+
+	_ = u3.ReceiveFile("sameFile", "foo2", m2)
+	_ = u3.ReceiveFile("sameFile", "foo2", m2)
+
+	data3, err := u3.LoadFile("sameFile", 0)
+	if err != nil || !reflect.DeepEqual(data2, data3) {
+		t.Error("Corrupt Data Received: ", err)
+	} else {
+		t.Log("data fetched")
 	}
 	// add test cases here
 }
