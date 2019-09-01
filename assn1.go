@@ -113,14 +113,12 @@ func NewInode() *Inode {
 type FileEntry struct {
 	InodeAddress  uuid.UUID
 	FileSecretKey []byte
-	HmacKey       []byte
 }
 
 // User : User structure used to store the user information
 type User struct {
 	Username   string
 	SecretKey  []byte
-	HmacKey    []byte
 	PrivateKey *userlib.PrivateKey
 	OwnedFiles map[string]FileEntry
 	// You can add other fields here if you want...
@@ -129,11 +127,10 @@ type User struct {
 }
 
 // NewUser returns a initialised User struct
-func NewUser(username string, secretKey, hmacKey []byte, privateKey *userlib.PrivateKey) *User {
+func NewUser(username string, secretKey []byte, privateKey *userlib.PrivateKey) *User {
 	return &User{
 		Username:   username,
 		SecretKey:  secretKey,
-		HmacKey:    hmacKey,
 		PrivateKey: privateKey,
 		OwnedFiles: make(map[string]FileEntry),
 	}
@@ -144,99 +141,12 @@ func NewUser(username string, secretKey, hmacKey []byte, privateKey *userlib.Pri
 // of data []byte is a multiple of the blocksize; if
 // this is not the case, StoreFile should return an error.
 func (userdata *User) StoreFile(filename string, data []byte) error {
-	if len(data)%configBlockSize != 0 {
-		return errors.New("data not a multiple of blocksize")
-	}
-
-	if err := userdata.loadUser(); err != nil {
-		return err
-	}
-
-	if fe, ok := userdata.OwnedFiles[filename]; ok {
-		if err := userdata.destroyFile(filename, fe); err != nil {
-			return err
-		}
-
-		delete(userdata.OwnedFiles, filename)
-		if err := userdata.saveUser(); err != nil {
-			return err
-		}
-	}
-
 	return userdata.AppendFile(filename, data)
-}
-
-func (userdata *User) destroyFile(filename string, fe FileEntry) error {
-	if err := userdata.loadUser(); err != nil {
-		return err
-	}
-
-	var inode Inode
-	inodeJSON, err := SecureDatastoreGet(fe.FileSecretKey, fe.HmacKey, fe.InodeAddress)
-	if err != nil {
-		return err
-	}
-
-	if err = json.Unmarshal(inodeJSON, &inode); err != nil {
-		return err
-	}
-
-	for inode.FileSize > 0 {
-		var key uuid.UUID
-		switch {
-		case inode.FileSize < 12:
-			key = inode.DirectPointers[inode.FileSize]
-		case inode.FileSize-12 < uuidsPerBlock():
-			var directPointers []uuid.UUID
-			directPointers, err = getUUIDBlock(fe.FileSecretKey, fe.HmacKey, inode.SingleIndirect)
-			if err != nil {
-				return err
-			}
-
-			key = directPointers[inode.FileSize-12]
-			if inode.FileSize == 12 {
-				SecureDatastoreDelete(fe.FileSecretKey, inode.SingleIndirect)
-			}
-		default:
-			// assume that data would fit in the double indirect block
-			singleIndirectPointers, err := getUUIDBlock(fe.FileSecretKey, fe.HmacKey, inode.DoubleIndirect)
-			if err != nil {
-				return err
-			}
-
-			offset := (inode.FileSize - 12 - uuidsPerBlock()) / uuidsPerBlock()
-			id := (inode.FileSize - 12 - uuidsPerBlock()) % uuidsPerBlock()
-
-			directPointers, err := getUUIDBlock(fe.FileSecretKey, fe.HmacKey, singleIndirectPointers[offset])
-			if err != nil {
-				return err
-			}
-			key = directPointers[id]
-			if id == 0 {
-				// need to destroy a single indirect block
-				SecureDatastoreDelete(fe.FileSecretKey, singleIndirectPointers[offset])
-
-				if offset == 0 {
-					SecureDatastoreDelete(fe.FileSecretKey, inode.DoubleIndirect)
-				}
-			}
-
-		}
-
-		SecureDatastoreDelete(fe.FileSecretKey, key)
-		inode.FileSize--
-	}
-
-	if err := SecureDatastoreDelete(fe.FileSecretKey, fe.InodeAddress); err != nil {
-		return err
-	}
-
-	return nil
 }
 
 // appendBlock adds a block of data to the inode and saves it on the datastore
 // Does not store inode on the Datastore
-func appendBlock(inode *Inode, fileSecretKey, hmacKey, data []byte) (err error) {
+func appendBlock(inode *Inode, fileSecretKey, data []byte) (err error) {
 	key := uuid.New()
 
 	switch {
@@ -244,30 +154,30 @@ func appendBlock(inode *Inode, fileSecretKey, hmacKey, data []byte) (err error) 
 		inode.DirectPointers[inode.FileSize] = key
 	case inode.FileSize == 12:
 		// need to initiallize a single indirect block
-		if inode.SingleIndirect, err = initUUIDBlock(fileSecretKey, hmacKey); err != nil {
+		if inode.SingleIndirect, err = initUUIDBlock(fileSecretKey); err != nil {
 			return err
 		}
 		fallthrough
 	case inode.FileSize-12 < uuidsPerBlock():
 		var directPointers []uuid.UUID
-		directPointers, err = getUUIDBlock(fileSecretKey, hmacKey, inode.SingleIndirect)
+		directPointers, err = getUUIDBlock(fileSecretKey, inode.SingleIndirect)
 		if err != nil {
 			return err
 		}
 
 		directPointers[inode.FileSize-12] = key
-		if err = setUUIDBlock(fileSecretKey, hmacKey, inode.SingleIndirect, directPointers); err != nil {
+		if err = setUUIDBlock(fileSecretKey, inode.SingleIndirect, directPointers); err != nil {
 			return err
 		}
 	case inode.FileSize-12 == uuidsPerBlock():
 		// need to initialize double inderect block
-		if inode.DoubleIndirect, err = initUUIDBlock(fileSecretKey, hmacKey); err != nil {
+		if inode.DoubleIndirect, err = initUUIDBlock(fileSecretKey); err != nil {
 			return err
 		}
 		fallthrough
 	default:
 		// assume that data would fit in the double indirect block
-		singleIndirectPointers, err := getUUIDBlock(fileSecretKey, hmacKey, inode.DoubleIndirect)
+		singleIndirectPointers, err := getUUIDBlock(fileSecretKey, inode.DoubleIndirect)
 		if err != nil {
 			return err
 		}
@@ -276,41 +186,41 @@ func appendBlock(inode *Inode, fileSecretKey, hmacKey, data []byte) (err error) 
 		id := (inode.FileSize - 12 - uuidsPerBlock()) % uuidsPerBlock()
 		if id == 0 {
 			// need to initialize single indirect block
-			if singleIndirectPointers[offset], err = initUUIDBlock(fileSecretKey, hmacKey); err != nil {
+			if singleIndirectPointers[offset], err = initUUIDBlock(fileSecretKey); err != nil {
 				return err
 			}
 		}
 
-		directPointers, err := getUUIDBlock(fileSecretKey, hmacKey, singleIndirectPointers[offset])
+		directPointers, err := getUUIDBlock(fileSecretKey, singleIndirectPointers[offset])
 		if err != nil {
 			return err
 		}
 
 		directPointers[id] = key
-		if err := setUUIDBlock(fileSecretKey, hmacKey, singleIndirectPointers[offset], directPointers); err != nil {
+		if err := setUUIDBlock(fileSecretKey, singleIndirectPointers[offset], directPointers); err != nil {
 			return err
 		}
 	}
 	inode.FileSize++
 
-	return SecureDatastoreSet(fileSecretKey, hmacKey, key, data)
+	return SecureDatastoreSet(fileSecretKey, key, data)
 }
 
 func uuidsPerBlock() int {
 	return configBlockSize / len(uuid.Nil)
 }
 
-func initUUIDBlock(fileSecretKey, hmacKey []byte) (key uuid.UUID, err error) {
+func initUUIDBlock(fileSecretKey []byte) (key uuid.UUID, err error) {
 	uuids := make([]uuid.UUID, uuidsPerBlock())
 	key = uuid.New()
 
-	err = setUUIDBlock(fileSecretKey, hmacKey, key, uuids)
+	err = setUUIDBlock(fileSecretKey, key, uuids)
 	return
 }
 
-func getUUIDBlock(fileSecretKey, hmacKey []byte, key uuid.UUID) ([]uuid.UUID, error) {
+func getUUIDBlock(fileSecretKey []byte, key uuid.UUID) ([]uuid.UUID, error) {
 	var pointers []uuid.UUID
-	data, err := SecureDatastoreGet(fileSecretKey, hmacKey, key)
+	data, err := SecureDatastoreGet(fileSecretKey, key)
 	if err != nil {
 		return nil, err
 	}
@@ -322,13 +232,13 @@ func getUUIDBlock(fileSecretKey, hmacKey []byte, key uuid.UUID) ([]uuid.UUID, er
 	return pointers, nil
 }
 
-func setUUIDBlock(fileSecretKey, hmacKey []byte, key uuid.UUID, uuids []uuid.UUID) error {
+func setUUIDBlock(fileSecretKey []byte, key uuid.UUID, uuids []uuid.UUID) error {
 	data, err := json.Marshal(uuids)
 	if err != nil {
 		return err
 	}
 
-	if err := SecureDatastoreSet(fileSecretKey, hmacKey, key, data); err != nil {
+	if err := SecureDatastoreSet(fileSecretKey, key, data); err != nil {
 		return err
 	}
 
@@ -339,11 +249,9 @@ func (userdata *User) createNewFile(filename string) (err error) {
 	inodeAddress := uuid.New()
 
 	fileSecretKey := userlib.RandomBytes(int(KeyLen))
-	hmacKey := userlib.RandomBytes(int(KeyLen))
 	userdata.OwnedFiles[filename] = FileEntry{
 		InodeAddress:  inodeAddress,
 		FileSecretKey: fileSecretKey,
-		HmacKey:       hmacKey,
 	}
 
 	return userdata.saveUser()
@@ -373,7 +281,7 @@ func (userdata *User) AppendFile(filename string, data []byte) error {
 		inode = *NewInode()
 	} else {
 		// file exists, load the inode from datastore
-		inodeJSON, err := SecureDatastoreGet(fe.FileSecretKey, fe.HmacKey, fe.InodeAddress)
+		inodeJSON, err := SecureDatastoreGet(fe.FileSecretKey, fe.InodeAddress)
 		if err != nil {
 			return err
 		}
@@ -387,7 +295,7 @@ func (userdata *User) AppendFile(filename string, data []byte) error {
 	fe := userdata.OwnedFiles[filename]
 	buffer := data
 	for len(buffer) > 0 {
-		if err := appendBlock(&inode, fe.FileSecretKey, fe.HmacKey, buffer[:configBlockSize]); err != nil {
+		if err := appendBlock(&inode, fe.FileSecretKey, buffer[:configBlockSize]); err != nil {
 			return err
 		}
 		buffer = buffer[configBlockSize:]
@@ -398,7 +306,7 @@ func (userdata *User) AppendFile(filename string, data []byte) error {
 		return err
 	}
 
-	return SecureDatastoreSet(fe.FileSecretKey, fe.HmacKey, fe.InodeAddress, inodeJSON)
+	return SecureDatastoreSet(fe.FileSecretKey, fe.InodeAddress, inodeJSON)
 }
 
 // LoadFile :This loads a block from a file in the Datastore.
@@ -416,7 +324,7 @@ func (userdata *User) LoadFile(filename string, offset int) ([]byte, error) {
 
 	fe := userdata.OwnedFiles[filename]
 	var inode Inode
-	inodeJSON, err := SecureDatastoreGet(fe.FileSecretKey, fe.HmacKey, fe.InodeAddress)
+	inodeJSON, err := SecureDatastoreGet(fe.FileSecretKey, fe.InodeAddress)
 	if err != nil {
 		return nil, err
 	}
@@ -426,10 +334,10 @@ func (userdata *User) LoadFile(filename string, offset int) ([]byte, error) {
 		return nil, err
 	}
 
-	return loadFileAtOffset(&inode, fe.FileSecretKey, fe.HmacKey, offset)
+	return loadFileAtOffset(&inode, fe.FileSecretKey, offset)
 }
 
-func loadFileAtOffset(inode *Inode, fileSecretKey, hmacKey []byte, offset int) ([]byte, error) {
+func loadFileAtOffset(inode *Inode, fileSecretKey []byte, offset int) ([]byte, error) {
 	if offset >= inode.FileSize {
 		userlib.DebugMsg("invalid block offset")
 		return nil, errors.New("offset invalid or does not exist")
@@ -440,14 +348,14 @@ func loadFileAtOffset(inode *Inode, fileSecretKey, hmacKey []byte, offset int) (
 	case offset < 12:
 		key = inode.DirectPointers[offset]
 	case offset < uuidsPerBlock():
-		directPointers, err := getUUIDBlock(fileSecretKey, hmacKey, inode.SingleIndirect)
+		directPointers, err := getUUIDBlock(fileSecretKey, inode.SingleIndirect)
 		if err != nil {
 			return nil, err
 		}
 		key = directPointers[offset-12]
 	default:
 		// assume that the filesize would be less than the double indirect pointer storage capacity
-		indirectPointers, err := getUUIDBlock(fileSecretKey, hmacKey, inode.DoubleIndirect)
+		indirectPointers, err := getUUIDBlock(fileSecretKey, inode.DoubleIndirect)
 		if err != nil {
 			return nil, err
 		}
@@ -455,7 +363,7 @@ func loadFileAtOffset(inode *Inode, fileSecretKey, hmacKey []byte, offset int) (
 		indirectBlockID := (offset - 12 - uuidsPerBlock()) / uuidsPerBlock()
 		id := (inode.FileSize - 12 - uuidsPerBlock()) % uuidsPerBlock()
 
-		directPointers, err := getUUIDBlock(fileSecretKey, hmacKey, indirectPointers[indirectBlockID])
+		directPointers, err := getUUIDBlock(fileSecretKey, indirectPointers[indirectBlockID])
 		if err != nil {
 			return nil, err
 		}
@@ -463,12 +371,7 @@ func loadFileAtOffset(inode *Inode, fileSecretKey, hmacKey []byte, offset int) (
 		key = directPointers[id]
 	}
 
-	data, err := SecureDatastoreGet(fileSecretKey, hmacKey, key)
-	if err != nil {
-		return nil, err
-	}
-
-	return data, nil
+	return SecureDatastoreGet(fileSecretKey, key)
 }
 
 // ShareFile : Function used to the share file with other user
@@ -494,10 +397,9 @@ func (userdata *User) ShareFile(filename string, recipient string) (string, erro
 	// prepare data to send
 	sharingRecordData := append(sign, feJSON...)
 	sharingRecordKey := userlib.RandomBytes(int(KeyLen))
-	sharingRecordHmac := userlib.RandomBytes(int(KeyLen))
 	sharingRecordAddress := uuid.New()
 
-	err = SecureDatastoreSet(sharingRecordKey, sharingRecordHmac, sharingRecordAddress, sharingRecordData)
+	err = SecureDatastoreSet(sharingRecordKey, sharingRecordAddress, sharingRecordData)
 	if err != nil {
 		return "", err
 	}
@@ -509,7 +411,6 @@ func (userdata *User) ShareFile(filename string, recipient string) (string, erro
 
 	userlib.DebugMsg("sharingRecordKey=%v, sharingRecordAddress=%s", sharingRecordKey, sharingRecordAddress)
 	data := append(sharingRecordKey, sharingRecordAddress.String()...)
-	data = append(data, sharingRecordHmac...)
 	userlib.DebugMsg("Total data length: %v", len(data))
 	encryptedData, err := userlib.RSAEncrypt(&pubKey, data, nil)
 	if err != nil {
@@ -540,16 +441,13 @@ func (userdata *User) ReceiveFile(filename string, sender string, msgid string) 
 	}
 
 	sharingRecordKey := data[:KeyLen]
-	data = data[KeyLen:]
-
-	sharingRecordAddress, err := uuid.Parse(string(data[:len(uuid.Nil.String())]))
+	sharingRecordAddress, err := uuid.Parse(string(data[KeyLen:]))
 	if err != nil {
 		return err
 	}
 
-	sharingRecordHmac := data[len(uuid.Nil.String()):]
 	userlib.DebugMsg("sharingRecordKey=%v, sharingRecordAddress=%s", sharingRecordKey, sharingRecordAddress)
-	sharingRecordData, err := SecureDatastoreGet(sharingRecordKey, sharingRecordHmac, sharingRecordAddress)
+	sharingRecordData, err := SecureDatastoreGet(sharingRecordKey, sharingRecordAddress)
 	if err != nil {
 		return err
 	}
@@ -584,7 +482,7 @@ func (userdata *User) RevokeFile(filename string) error {
 
 	feOld := userdata.OwnedFiles[filename]
 	var inodeOld Inode
-	inodeOldJSON, err := SecureDatastoreGet(feOld.FileSecretKey, feOld.HmacKey, feOld.InodeAddress)
+	inodeOldJSON, err := SecureDatastoreGet(feOld.FileSecretKey, feOld.InodeAddress)
 	if err != nil {
 		return err
 	}
@@ -593,15 +491,19 @@ func (userdata *User) RevokeFile(filename string) error {
 		return err
 	}
 
+	// Time to Destroy old file
+	if err = SecureDatastoreDelete(feOld.FileSecretKey, feOld.InodeAddress); err != nil {
+		return err
+	}
 	delete(userdata.OwnedFiles, filename)
-	if err := userdata.saveUser(); err != nil {
+	if err = userdata.saveUser(); err != nil {
 		return err
 	}
 
 	for offset := 0; offset < inodeOld.FileSize; offset++ {
 		var buffer []byte
 		if buffer, err = loadFileAtOffset(
-			&inodeOld, feOld.FileSecretKey, feOld.HmacKey, offset,
+			&inodeOld, feOld.FileSecretKey, offset,
 		); err != nil {
 			return err
 		}
@@ -611,7 +513,7 @@ func (userdata *User) RevokeFile(filename string) error {
 		}
 	}
 
-	return userdata.destroyFile(filename, feOld)
+	return nil
 }
 
 // This creates a sharing record, which is a key pointing to something
@@ -656,8 +558,7 @@ func InitUser(username string, password string) (*User, error) {
 		return nil, errors.New("User already exists, aborted")
 	}
 
-	secretKey := userlib.Argon2Key([]byte(password+username), makeSalt([]byte(username)), KeyLen)
-	hmacKey := userlib.Argon2Key([]byte(username+password), makeSalt([]byte(username)), KeyLen)
+	secretKey := userlib.Argon2Key([]byte(password), []byte(FixedSalt), KeyLen)
 	privKey, err := userlib.GenerateRSAKey()
 	if err != nil {
 		userlib.DebugMsg("GenerateRSAKey failed")
@@ -667,20 +568,33 @@ func InitUser(username string, password string) (*User, error) {
 	// Register the public key on the keystore
 	userlib.KeystoreSet(username, privKey.PublicKey)
 	// store User struct on datastore
-	userdataptr := NewUser(username, secretKey, hmacKey, privKey)
+	userdataptr := NewUser(username, secretKey, privKey)
 	userlib.DebugMsg("user=%+v", userdataptr)
 
-	if err = userdataptr.saveUser(); err != nil {
+	userJSON, err := json.Marshal(userdataptr)
+	if err != nil {
 		return nil, err
 	}
 
-	return userdataptr, nil
+	// userlib.DebugMsg("userJSON=%s", userJSON)
+	userLoc, err := uuidFromBytes([]byte(userdataptr.Username))
+	if err != nil {
+		return nil, err
+	}
+
+	return userdataptr, SecureDatastoreSet(userdataptr.SecretKey, userLoc, userJSON)
+
+	// return userdataptr, nil
 }
 
 func (userdata *User) loadUser() error {
-	userLoc := bytesToUUID(makeSalt([]byte(userdata.Username)))
+	return nil // bypass
+	userLoc, err := uuidFromBytes([]byte(userdata.Username))
+	if err != nil {
+		return err
+	}
 
-	userJSON, err := SecureDatastoreGet(userdata.SecretKey, userdata.HmacKey, userLoc)
+	userJSON, err := SecureDatastoreGet(userdata.SecretKey, userLoc)
 	if err != nil {
 		return err
 	}
@@ -689,15 +603,19 @@ func (userdata *User) loadUser() error {
 }
 
 func (userdata *User) saveUser() error {
+	return nil // bypass
 	userJSON, err := json.Marshal(userdata)
 	if err != nil {
 		return err
 	}
 
 	// userlib.DebugMsg("userJSON=%s", userJSON)
-	userLoc := bytesToUUID(makeSalt([]byte(userdata.Username)))
+	userLoc, err := uuidFromBytes([]byte(userdata.Username))
+	if err != nil {
+		return err
+	}
 
-	return SecureDatastoreSet(userdata.SecretKey, userdata.HmacKey, userLoc, userJSON)
+	return SecureDatastoreSet(userdata.SecretKey, userLoc, userJSON)
 }
 
 // GetUser : This fetches the user information from the Datastore.  It should
@@ -708,13 +626,16 @@ func GetUser(username string, password string) (*User, error) {
 	userlib.DebugMsg("GetUser called")
 
 	secretKey := userlib.Argon2Key(
-		[]byte(password+username), makeSalt([]byte(username)), KeyLen,
+		[]byte(password), []byte(FixedSalt), KeyLen,
 	)
-	hmacKey := userlib.Argon2Key([]byte(username+password), makeSalt([]byte(username)), KeyLen)
 
-	userLoc := bytesToUUID(makeSalt([]byte(username)))
+	userLoc, err := uuidFromBytes([]byte(username))
+	if err != nil {
+		userlib.DebugMsg("failed to determine uuid for username")
+		return nil, err
+	}
 
-	userJSON, err := SecureDatastoreGet(secretKey, hmacKey, userLoc)
+	userJSON, err := SecureDatastoreGet(secretKey, userLoc)
 	if err != nil {
 		userlib.DebugMsg("failed to DatastoreGet for username=%s", username)
 		return nil, err
@@ -732,31 +653,21 @@ func GetUser(username string, password string) (*User, error) {
 	return &userdata, nil
 }
 
-func makeSalt(b []byte) []byte {
-	sha := userlib.NewSHA256()
-	sha.Write(b)
-	return sha.Sum(nil)[:16]
-}
-
 func uuidFromBytes(b []byte) (uuid.UUID, error) {
 	key := userlib.Argon2Key(
-		b, makeSalt(b), uint32(len(uuid.Nil)),
+		b, []byte(FixedSalt), uint32(len(uuid.Nil)),
 	)
 	return uuid.FromBytes(key)
 }
 
-// func uuidFromBytes(b []byte) (uuid.UUID, error) {
-// 	return bytesToUUID(makeSalt(b)), nil
-// }
-
 // SecureDatastoreSet is secure version of DatastoreSet
-func SecureDatastoreSet(secretKey, hmacKey []byte, dataKey uuid.UUID, dataValue []byte) error {
-	maskedLocation, err := uuidFromBytes([]byte(dataKey.String()))
+func SecureDatastoreSet(secretKey []byte, dataKey uuid.UUID, dataValue []byte) error {
+	maskedLocation, err := uuidFromBytes(append(secretKey, dataKey.String()...))
 	if err != nil {
 		return err
 	}
 
-	hmacWriter := userlib.NewHMAC(hmacKey)
+	hmacWriter := userlib.NewHMAC(secretKey)
 	_, _ = hmacWriter.Write([]byte(maskedLocation.String()))
 	_, _ = hmacWriter.Write(dataValue)
 	data := append(hmacWriter.Sum(nil), dataValue...)
@@ -774,8 +685,8 @@ func SecureDatastoreSet(secretKey, hmacKey []byte, dataKey uuid.UUID, dataValue 
 }
 
 // SecureDatastoreGet is secure version of DatastoreGet
-func SecureDatastoreGet(secretKey, hmacKey []byte, dataKey uuid.UUID) (dataValue []byte, err error) {
-	maskedLocation, err := uuidFromBytes([]byte(dataKey.String()))
+func SecureDatastoreGet(secretKey []byte, dataKey uuid.UUID) (dataValue []byte, err error) {
+	maskedLocation, err := uuidFromBytes(append(secretKey, dataKey.String()...))
 	if err != nil {
 		return
 	}
@@ -793,7 +704,7 @@ func SecureDatastoreGet(secretKey, hmacKey []byte, dataKey uuid.UUID) (dataValue
 	oldHmac := data[:userlib.HashSize]
 	dataValue = data[userlib.HashSize:]
 
-	hmacWriter := userlib.NewHMAC(hmacKey)
+	hmacWriter := userlib.NewHMAC(secretKey)
 	_, _ = hmacWriter.Write([]byte(maskedLocation.String()))
 	_, _ = hmacWriter.Write(dataValue)
 	userlib.DebugMsg("hmac=%v", hmacWriter.Sum(nil))
@@ -807,7 +718,11 @@ func SecureDatastoreGet(secretKey, hmacKey []byte, dataKey uuid.UUID) (dataValue
 
 // SecureDatastoreDelete is secure version of DatastoreDelete
 func SecureDatastoreDelete(secretKey []byte, dataKey uuid.UUID) error {
-	maskedLocation, err := uuidFromBytes([]byte(dataKey.String()))
+	kdfBytes := userlib.Argon2Key(
+		append(secretKey, []byte(dataKey.String())...),
+		[]byte(FixedSalt), KeyLen,
+	)
+	maskedLocation, err := uuid.FromBytes(kdfBytes)
 	if err != nil {
 		return err
 	}
