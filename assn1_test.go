@@ -9,6 +9,8 @@ import "reflect"
 // solution, but is how you make sure your solution is correct.
 
 func TestInitUser(t *testing.T) {
+	userlib.KeystoreClear()
+	userlib.DatastoreClear()
 	t.Log("Initialization test")
 	// userlib.DebugPrint = true
 
@@ -30,32 +32,9 @@ func TestInitUser(t *testing.T) {
 	// add more test cases here
 }
 
-func TestMultipleInstanceUser(t *testing.T) {
-	t.Log("Multiple Instance for User Test")
-	_, _ = InitUser("foo", "bar")
-	userlib.DebugPrint = true
-
-	_, err := InitUser("foo", "bar")
-	if err != nil {
-		t.Log("Successfully failed multiple initialization of user: ", err)
-
-	} else {
-		t.Error("Initialized multiple user")
-	}
-	// add more test cases here
-
-	_, err = GetUser("foo", "bar")
-	if err != nil {
-		t.Error("multiple instance failed: ", err)
-	}
-	_, err = GetUser("foo", "bar")
-	if err != nil {
-		t.Error("multiple instance failed: ", err)
-	}
-
-}
-
 func TestUserStorage(t *testing.T) {
+	userlib.KeystoreClear()
+	userlib.DatastoreClear()
 	// userlib.DebugPrint = true
 	u, err := GetUser("", "fubar")
 	if err != nil {
@@ -76,6 +55,7 @@ func TestUserStorage(t *testing.T) {
 
 func TestFileStoreLoadAppend(t *testing.T) {
 	userlib.KeystoreClear()
+	userlib.DatastoreClear()
 	u1, _ := InitUser("foo", "bar")
 
 	// userlib.DebugPrint = true
@@ -94,8 +74,43 @@ func TestFileStoreLoadAppend(t *testing.T) {
 	// add test cases here
 }
 
+func TestMultipleInstanceUser(t *testing.T) {
+	userlib.KeystoreClear()
+	userlib.DatastoreClear()
+
+	t.Log("Multiple Instance for User Test")
+	_, _ = InitUser("foo", "bar")
+	userlib.DebugPrint = true
+
+	_, err := InitUser("foo", "bar")
+	if err != nil {
+		t.Log("Successfully failed multiple initialization of user: ", err)
+
+	} else {
+		t.Error("Initialized multiple user")
+	}
+	// add more test cases here
+
+	u1, _ := GetUser("foo", "bar")
+	data1 := userlib.RandomBytes(4096)
+	_ = u1.StoreFile("file1", data1)
+	u1, _ = GetUser("foo", "bar")
+	data2, err := u1.LoadFile("file1", 0)
+	if err != nil {
+		t.Error("failed to get file: ", err)
+	}
+
+	if !reflect.DeepEqual(data1, data2) {
+		t.Error("data corrupted")
+	} else {
+		t.Log("data is not corrupted")
+	}
+}
+
 func TestFileShareReceive(t *testing.T) {
 	userlib.KeystoreClear()
+	userlib.DatastoreClear()
+
 	u1, _ := InitUser("foo", "bar")
 	u2, _ := InitUser("foo2", "bar1")
 
@@ -126,6 +141,7 @@ func TestFileShareReceive(t *testing.T) {
 
 func TestFileShareRevoke(t *testing.T) {
 	userlib.KeystoreClear()
+	userlib.DatastoreClear()
 	u1, _ := InitUser("foo", "bar")
 	u2, _ := InitUser("foo2", "bar1")
 

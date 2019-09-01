@@ -145,6 +145,7 @@ func (userdata *User) StoreFile(filename string, data []byte) error {
 }
 
 // appendBlock adds a block of data to the inode and saves it on the datastore
+// Does not store inode on the Datastore
 func appendBlock(inode *Inode, fileSecretKey, data []byte) error {
 	key, err := uuid.FromBytes(userlib.RandomBytes(len(uuid.Nil)))
 	if err != nil {
@@ -262,7 +263,7 @@ func (userdata *User) createNewFile(filename string) (err error) {
 		FileSecretKey: fileSecretKey,
 	}
 
-	return nil
+	return userdata.saveUser()
 }
 
 //
@@ -274,6 +275,10 @@ func (userdata *User) createNewFile(filename string) (err error) {
 func (userdata *User) AppendFile(filename string, data []byte) error {
 	if len(data)%configBlockSize != 0 {
 		return errors.New("data not a multiple of blocksize")
+	}
+
+	if err := userdata.loadUser(); err != nil {
+		return err
 	}
 
 	var inode Inode
@@ -321,7 +326,11 @@ func (userdata *User) AppendFile(filename string, data []byte) error {
 //
 // LoadFile is also expected to be efficient. Reading a random block from the
 // file should not fetch more than O(1) blocks from the Datastore.
-func (userdata *User) LoadFile(filename string, offset int) (data []byte, err error) {
+func (userdata *User) LoadFile(filename string, offset int) ([]byte, error) {
+	if err := userdata.loadUser(); err != nil {
+		return nil, err
+	}
+
 	fe := userdata.OwnedFiles[filename]
 	var inode Inode
 	inodeJSON, err := SecureDatastoreGet(fe.FileSecretKey, fe.InodeAddress)
@@ -375,7 +384,11 @@ func loadFileAtOffset(inode *Inode, fileSecretKey []byte, offset int) ([]byte, e
 }
 
 // ShareFile : Function used to the share file with other user
-func (userdata *User) ShareFile(filename string, recipient string) (msgid string, err error) {
+func (userdata *User) ShareFile(filename string, recipient string) (string, error) {
+	if err := userdata.loadUser(); err != nil {
+		return "", err
+	}
+
 	fe := userdata.OwnedFiles[filename]
 	feJSON, err := json.Marshal(fe)
 	if err != nil {
@@ -418,7 +431,7 @@ func (userdata *User) ShareFile(filename string, recipient string) (msgid string
 		return "", err
 	}
 
-	return string(encryptedData), nil
+	return hex.EncodeToString(encryptedData), nil
 }
 
 // ReceiveFile:Note recipient's filename can be different from the sender's filename.
@@ -427,7 +440,16 @@ func (userdata *User) ShareFile(filename string, recipient string) (msgid string
 // it is authentically from the sender.
 // ReceiveFile : function used to receive the file details from the sender
 func (userdata *User) ReceiveFile(filename string, sender string, msgid string) error {
-	data, err := userlib.RSADecrypt(userdata.PrivateKey, []byte(msgid), nil)
+	if err := userdata.loadUser(); err != nil {
+		return err
+	}
+
+	encryptedData, err := hex.DecodeString(msgid)
+	if err != nil {
+		return err
+	}
+
+	data, err := userlib.RSADecrypt(userdata.PrivateKey, encryptedData, nil)
 	if err != nil {
 		return err
 	}
@@ -463,11 +485,15 @@ func (userdata *User) ReceiveFile(filename string, sender string, msgid string) 
 	}
 
 	userdata.OwnedFiles[filename] = fe
-	return nil
+	return userdata.saveUser()
 }
 
 // RevokeFile : function used revoke the shared file access
 func (userdata *User) RevokeFile(filename string) error {
+	if err := userdata.loadUser(); err != nil {
+		return err
+	}
+
 	feOld := userdata.OwnedFiles[filename]
 	var inodeOld Inode
 	inodeOldJSON, err := SecureDatastoreGet(feOld.FileSecretKey, feOld.InodeAddress)
@@ -484,13 +510,9 @@ func (userdata *User) RevokeFile(filename string) error {
 		return err
 	}
 	delete(userdata.OwnedFiles, filename)
-
-	if err = userdata.createNewFile(filename); err != nil {
+	if err = userdata.saveUser(); err != nil {
 		return err
 	}
-
-	feNew := userdata.OwnedFiles[filename]
-	inodeNew := *NewInode()
 
 	for offset := 0; offset < inodeOld.FileSize; offset++ {
 		var buffer []byte
@@ -500,17 +522,12 @@ func (userdata *User) RevokeFile(filename string) error {
 			return err
 		}
 
-		if err = appendBlock(&inodeNew, feNew.FileSecretKey, buffer); err != nil {
+		if err = userdata.AppendFile(filename, buffer); err != nil {
 			return err
 		}
 	}
 
-	inodeNewJSON, err := json.Marshal(inodeNew)
-	if err != nil {
-		return err
-	}
-
-	return SecureDatastoreSet(feNew.FileSecretKey, feNew.InodeAddress, inodeNewJSON)
+	return nil
 }
 
 // This creates a sharing record, which is a key pointing to something
@@ -546,8 +563,8 @@ type sharingRecord struct {
 // InitUser : function used to create user
 func InitUser(username string, password string) (*User, error) {
 	userlib.DebugMsg("InitUser called")
-	if username == "" {
-		return nil, errors.New("Invalid username")
+	if username == "" || password == "" {
+		return nil, errors.New("Invalid username or password")
 	}
 
 	if _, ok := userlib.KeystoreGet(username); ok {
@@ -567,18 +584,41 @@ func InitUser(username string, password string) (*User, error) {
 	// store User struct on datastore
 	userdataptr := NewUser(username, secretKey, privKey)
 	userlib.DebugMsg("user=%+v", userdataptr)
-	userJSON, err := json.Marshal(userdataptr)
-	if err != nil {
+
+	if err = userdataptr.saveUser(); err != nil {
 		return nil, err
+	}
+
+	return userdataptr, nil
+}
+
+func (userdata *User) loadUser() error {
+	userLoc, err := uuidFromString(userdata.Username)
+	if err != nil {
+		return err
+	}
+
+	userJSON, err := SecureDatastoreGet(userdata.SecretKey, userLoc)
+	if err != nil {
+		return err
+	}
+
+	return json.Unmarshal(userJSON, userdata)
+}
+
+func (userdata *User) saveUser() error {
+	userJSON, err := json.Marshal(userdata)
+	if err != nil {
+		return err
 	}
 
 	// userlib.DebugMsg("userJSON=%s", userJSON)
-	userLoc, err := uuidFromString(username)
+	userLoc, err := uuidFromString(userdata.Username)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	return userdataptr, SecureDatastoreSet(secretKey, userLoc, userJSON)
+	return SecureDatastoreSet(userdata.SecretKey, userLoc, userJSON)
 }
 
 // GetUser : This fetches the user information from the Datastore.  It should
@@ -636,11 +676,12 @@ func SecureDatastoreSet(secretKey []byte, dataKey uuid.UUID, dataValue []byte) e
 	data := append(hmacWriter.Sum(nil), dataValue...)
 	userlib.DebugMsg("hmac=%v", hmacWriter.Sum(nil))
 
-	encrypter := userlib.CFBEncrypter(secretKey, deriveIV([]byte(dataKey.String())))
+	iv := userlib.RandomBytes(userlib.BlockSize) // generate an new iv everytime
+	encrypter := userlib.CFBEncrypter(secretKey, iv)
 	encrypter.XORKeyStream(data, data) // this encrypts data in-place
 	userlib.DatastoreSet(
 		maskedLocation.String(),
-		data,
+		append(iv, data...),
 	)
 
 	return nil
@@ -658,7 +699,10 @@ func SecureDatastoreGet(secretKey []byte, dataKey uuid.UUID) (dataValue []byte, 
 		return nil, errors.New("key not found in datastore")
 	}
 
-	decrypter := userlib.CFBDecrypter(secretKey, deriveIV([]byte(dataKey.String())))
+	iv := data[:userlib.BlockSize]
+	data = data[userlib.BlockSize:]
+
+	decrypter := userlib.CFBDecrypter(secretKey, iv)
 	decrypter.XORKeyStream(data, data) // this decrypts data in-place
 	oldHmac := data[:userlib.HashSize]
 	dataValue = data[userlib.HashSize:]
@@ -673,10 +717,6 @@ func SecureDatastoreGet(secretKey []byte, dataKey uuid.UUID) (dataValue []byte, 
 	}
 
 	return
-}
-
-func deriveIV(seed []byte) []byte {
-	return userlib.Argon2Key(seed, []byte(FixedSalt), uint32(userlib.BlockSize))
 }
 
 // SecureDatastoreDelete is secure version of DatastoreDelete
