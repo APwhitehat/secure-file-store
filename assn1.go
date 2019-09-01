@@ -334,6 +334,10 @@ func (userdata *User) LoadFile(filename string, offset int) (data []byte, err er
 		return nil, err
 	}
 
+	return loadFileAtOffset(&inode, fe.FileSecretKey, offset)
+}
+
+func loadFileAtOffset(inode *Inode, fileSecretKey []byte, offset int) ([]byte, error) {
 	if offset >= inode.FileSize {
 		userlib.DebugMsg("invalid block offset")
 		return nil, errors.New("offset invalid or does not exist")
@@ -344,14 +348,14 @@ func (userdata *User) LoadFile(filename string, offset int) (data []byte, err er
 	case offset < 12:
 		key = inode.DirectPointers[offset]
 	case offset < uuidsPerBlock():
-		directPointers, err := getUUIDBlock(fe.FileSecretKey, inode.SingleIndirect)
+		directPointers, err := getUUIDBlock(fileSecretKey, inode.SingleIndirect)
 		if err != nil {
 			return nil, err
 		}
 		key = directPointers[offset-12]
 	default:
 		// assume that the filesize would be less than the double indirect pointer storage capacity
-		indirectPointers, err := getUUIDBlock(fe.FileSecretKey, inode.DoubleIndirect)
+		indirectPointers, err := getUUIDBlock(fileSecretKey, inode.DoubleIndirect)
 		if err != nil {
 			return nil, err
 		}
@@ -359,7 +363,7 @@ func (userdata *User) LoadFile(filename string, offset int) (data []byte, err er
 		indirectBlockID := (offset - 12 - uuidsPerBlock()) / uuidsPerBlock()
 		id := (inode.FileSize - 12 - uuidsPerBlock()) % uuidsPerBlock()
 
-		directPointers, err := getUUIDBlock(fe.FileSecretKey, indirectPointers[indirectBlockID])
+		directPointers, err := getUUIDBlock(fileSecretKey, indirectPointers[indirectBlockID])
 		if err != nil {
 			return nil, err
 		}
@@ -367,7 +371,7 @@ func (userdata *User) LoadFile(filename string, offset int) (data []byte, err er
 		key = directPointers[id]
 	}
 
-	return SecureDatastoreGet(fe.FileSecretKey, key)
+	return SecureDatastoreGet(fileSecretKey, key)
 }
 
 // ShareFile : Function used to the share file with other user
