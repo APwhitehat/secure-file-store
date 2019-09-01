@@ -123,3 +123,38 @@ func TestFileShareReceive(t *testing.T) {
 	}
 	// add test cases here
 }
+
+func TestFileShareRevoke(t *testing.T) {
+	userlib.KeystoreClear()
+	u1, _ := InitUser("foo", "bar")
+	u2, _ := InitUser("foo2", "bar1")
+
+	data1 := userlib.RandomBytes(4096)
+	_ = u1.StoreFile("file1", data1)
+
+	m, err := u1.ShareFile("file1", "foo2")
+	if err != nil {
+		t.Error("Failed to share file1: ", err)
+	}
+
+	err = u2.ReceiveFile("copyOfFile1", "foo", m)
+	if err != nil {
+		t.Error("Failed to receive file", err)
+	}
+
+	userlib.DebugPrint = true
+
+	err = u1.RevokeFile("file1")
+	if err != nil {
+		t.Error("Failed to Revoke file", err)
+	}
+
+	data2, err := u2.LoadFile("copyOfFile1", 0)
+
+	if err == nil && reflect.DeepEqual(data1, data2) {
+		t.Error("Correct Data Received")
+	} else {
+		t.Log("data not fetched: ", err)
+	}
+	// add test cases here
+}

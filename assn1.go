@@ -479,6 +479,10 @@ func (userdata *User) RevokeFile(filename string) error {
 		return err
 	}
 
+	// Time to Destroy old file
+	if err = SecureDatastoreDelete(feOld.FileSecretKey, feOld.InodeAddress); err != nil {
+		return err
+	}
 	delete(userdata.OwnedFiles, filename)
 
 	if err = userdata.createNewFile(filename); err != nil {
