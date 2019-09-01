@@ -467,8 +467,46 @@ func (userdata *User) ReceiveFile(filename string, sender string, msgid string) 
 }
 
 // RevokeFile : function used revoke the shared file access
-func (userdata *User) RevokeFile(filename string) (err error) {
-	return
+func (userdata *User) RevokeFile(filename string) error {
+	feOld := userdata.OwnedFiles[filename]
+	var inodeOld Inode
+	inodeOldJSON, err := SecureDatastoreGet(feOld.FileSecretKey, feOld.InodeAddress)
+	if err != nil {
+		return err
+	}
+
+	if err = json.Unmarshal(inodeOldJSON, &inodeOld); err != nil {
+		return err
+	}
+
+	delete(userdata.OwnedFiles, filename)
+
+	if err = userdata.createNewFile(filename); err != nil {
+		return err
+	}
+
+	feNew := userdata.OwnedFiles[filename]
+	inodeNew := *NewInode()
+
+	for offset := 0; offset < inodeOld.FileSize; offset++ {
+		var buffer []byte
+		if buffer, err = loadFileAtOffset(
+			&inodeOld, feOld.FileSecretKey, offset,
+		); err != nil {
+			return err
+		}
+
+		if err = appendBlock(&inodeNew, feNew.FileSecretKey, buffer); err != nil {
+			return err
+		}
+	}
+
+	inodeNewJSON, err := json.Marshal(inodeNew)
+	if err != nil {
+		return err
+	}
+
+	return SecureDatastoreSet(feNew.FileSecretKey, feNew.InodeAddress, inodeNewJSON)
 }
 
 // This creates a sharing record, which is a key pointing to something
