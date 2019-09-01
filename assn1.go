@@ -334,10 +334,10 @@ func (userdata *User) LoadFile(filename string, offset int) ([]byte, error) {
 		return nil, err
 	}
 
-	return loadFileAtOffset(&inode, fe.FileSecretKey, offset)
+	return loadFileAtOffset(&inode, fe.FileSecretKey, offset, nil)
 }
 
-func loadFileAtOffset(inode *Inode, fileSecretKey []byte, offset int) ([]byte, error) {
+func loadFileAtOffset(inode *Inode, fileSecretKey []byte, offset int, del *bool) ([]byte, error) {
 	if offset >= inode.FileSize {
 		userlib.DebugMsg("invalid block offset")
 		return nil, errors.New("offset invalid or does not exist")
@@ -371,7 +371,16 @@ func loadFileAtOffset(inode *Inode, fileSecretKey []byte, offset int) ([]byte, e
 		key = directPointers[id]
 	}
 
-	return SecureDatastoreGet(fileSecretKey, key)
+	data, err := SecureDatastoreGet(fileSecretKey, key)
+	if err != nil {
+		return nil, err
+	}
+
+	if del != nil && *del {
+		SecureDatastoreDelete(fileSecretKey, key)
+	}
+
+	return data, nil
 }
 
 // ShareFile : Function used to the share file with other user
@@ -500,10 +509,11 @@ func (userdata *User) RevokeFile(filename string) error {
 		return err
 	}
 
+	del := true
 	for offset := 0; offset < inodeOld.FileSize; offset++ {
 		var buffer []byte
 		if buffer, err = loadFileAtOffset(
-			&inodeOld, feOld.FileSecretKey, offset,
+			&inodeOld, feOld.FileSecretKey, offset, &del,
 		); err != nil {
 			return err
 		}
@@ -558,7 +568,7 @@ func InitUser(username string, password string) (*User, error) {
 		return nil, errors.New("User already exists, aborted")
 	}
 
-	secretKey := userlib.Argon2Key([]byte(password+username), []byte(FixedSalt), KeyLen)
+	secretKey := userlib.Argon2Key([]byte(password+username), makeSalt([]byte(username)), KeyLen)
 	privKey, err := userlib.GenerateRSAKey()
 	if err != nil {
 		userlib.DebugMsg("GenerateRSAKey failed")
@@ -579,7 +589,7 @@ func InitUser(username string, password string) (*User, error) {
 }
 
 func (userdata *User) loadUser() error {
-	userLoc, err := uuidFromBytes([]byte(userdata.Username))
+	userLoc, err := uuidFromBytes(append(userdata.SecretKey, userdata.Username...))
 	if err != nil {
 		return err
 	}
@@ -599,7 +609,7 @@ func (userdata *User) saveUser() error {
 	}
 
 	// userlib.DebugMsg("userJSON=%s", userJSON)
-	userLoc, err := uuidFromBytes([]byte(userdata.Username))
+	userLoc, err := uuidFromBytes(append(userdata.SecretKey, userdata.Username...))
 	if err != nil {
 		return err
 	}
@@ -615,10 +625,10 @@ func GetUser(username string, password string) (*User, error) {
 	userlib.DebugMsg("GetUser called")
 
 	secretKey := userlib.Argon2Key(
-		[]byte(password+username), []byte(FixedSalt), KeyLen,
+		[]byte(password+username), makeSalt([]byte(username)), KeyLen,
 	)
 
-	userLoc, err := uuidFromBytes([]byte(username))
+	userLoc, err := uuidFromBytes(append(secretKey, username...))
 	if err != nil {
 		userlib.DebugMsg("failed to determine uuid for username")
 		return nil, err
@@ -642,9 +652,15 @@ func GetUser(username string, password string) (*User, error) {
 	return &userdata, nil
 }
 
+func makeSalt(b []byte) []byte {
+	sha := userlib.NewSHA256()
+	sha.Write(b)
+	return sha.Sum(nil)[:16]
+}
+
 func uuidFromBytes(b []byte) (uuid.UUID, error) {
 	key := userlib.Argon2Key(
-		b, []byte(FixedSalt), uint32(len(uuid.Nil)),
+		b, makeSalt(b), uint32(len(uuid.Nil)),
 	)
 	return uuid.FromBytes(key)
 }
@@ -707,11 +723,7 @@ func SecureDatastoreGet(secretKey []byte, dataKey uuid.UUID) (dataValue []byte, 
 
 // SecureDatastoreDelete is secure version of DatastoreDelete
 func SecureDatastoreDelete(secretKey []byte, dataKey uuid.UUID) error {
-	kdfBytes := userlib.Argon2Key(
-		append(secretKey, []byte(dataKey.String())...),
-		[]byte(FixedSalt), KeyLen,
-	)
-	maskedLocation, err := uuid.FromBytes(kdfBytes)
+	maskedLocation, err := uuidFromBytes(append(secretKey, dataKey.String()...))
 	if err != nil {
 		return err
 	}
